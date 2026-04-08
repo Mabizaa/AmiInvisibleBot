@@ -1,53 +1,12 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
+// ─── CONFIG ───────────────────────────────────────────────
 const TOKEN = process.env.BOT_TOKEN || "REMPLACE_PAR_TON_TOKEN";
 const MAIN_ADMIN = process.env.ADMIN_ID || "REMPLACE_PAR_TON_ID";
 const DB_FILE = "./data.json";
 
 const bot = new TelegramBot(TOKEN, { polling: true });
-
-// ─── TEXTES PAR DÉFAUT ────────────────────────────────────
-const DEFAULT_TEXTS = {
-  bienvenue: `🎁 *Amis Invisibles — DouXeur 💥✨*
-
-Le principe est simple : pendant *4 semaines*, tu vas prendre soin d'une personne que tu ne connais pas encore — ton ami(e) invisible. Tu lui envoies des messages, des attentions, des cadeaux... sans jamais révéler qui tu es.
-
-À la fin des 4 semaines, la révélation : tout le monde découvre qui était son ami invisible. 🎉
-
-Chaque semaine, un *thème* et des *défis* te seront envoyés pour guider tes échanges.`,
-
-  regles: `📋 *Les règles du jeu*
-
-✅ *Ce qu'on fait :*
-— Prendre soin de son ami invisible avec sincérité
-— Communiquer via ce bot uniquement (anonymat garanti)
-— Participer aux défis et thèmes hebdomadaires
-— Offrir un cadeau à la révélation
-
-🚫 *Ce qu'on évite absolument :*
-— Pas de drague ni propositions déplacées
-— Pas de questions pour identifier l'autre
-— Pas de rendez-vous avant la révélation
-— Pas d'inactivité totale
-
-⚠️ *Sanctions :*
-En cas d'infraction, signale via /signal. Une infraction grave = exclusion du jeu.
-
-🗓️ *Durée :* 4 semaines
-👫 *Binômes :* toujours 1 homme + 1 femme
-🎭 *Anonymat total* jusqu'à la révélation finale`,
-
-  confirmation: `✅ *Inscription confirmée !*
-
-🎭 Ton pseudo anonyme est : *{pseudo}*
-
-Ton vrai nom sera révélé uniquement à la fin du jeu lors de la soirée de révélation. 🎉
-
-📅 Chaque semaine, tu recevras un *thème* et des *défis* pour guider tes échanges avec ton ami invisible.
-
-⏳ Patiente le temps que le tirage soit effectué. Tu seras notifié(e) dès que ton ami invisible t'est attribué. 🎁`,
-};
 
 // ─── BASE DE DONNÉES ──────────────────────────────────────
 function loadData() {
@@ -55,20 +14,36 @@ function loadData() {
     return {
       registered: {}, pairs: {}, pending: {},
       admins: [String(MAIN_ADMIN)],
-      reports: [], customChallenges: [],
-      texts: { ...DEFAULT_TEXTS },
+      reports: [],
+      customChallenges: [],
+      pendingChallenges: [],
+      themes: {
+        1: "🌱 *Semaine 1 — Découverte*\n\nRestez en surface. Partagez vos goûts, vos habitudes, ce qui vous fait sourire au quotidien.",
+        2: "🌿 *Semaine 2 — Affinités*\n\nExplorez vos passions, vos univers, ce qui vous anime vraiment.",
+        3: "🌳 *Semaine 3 — Profondeur*\n\nVos valeurs, vos rêves, ce qui vous a construit.",
+        4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !"
+      },
+      nextWeekTheme: null,
+      gameStartDate: null,
+      currentWeek: 0,
+      lastReminderDate: null,
     };
   }
   const data = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
   if (!data.admins) data.admins = [String(MAIN_ADMIN)];
   if (!data.reports) data.reports = [];
   if (!data.customChallenges) data.customChallenges = [];
+  if (!data.pendingChallenges) data.pendingChallenges = [];
   if (!data.pending) data.pending = {};
-  if (!data.texts) data.texts = { ...DEFAULT_TEXTS };
-  // S'assurer que tous les textes par défaut existent
-  Object.keys(DEFAULT_TEXTS).forEach(k => {
-    if (!data.texts[k]) data.texts[k] = DEFAULT_TEXTS[k];
-  });
+  if (!data.themes) data.themes = {
+    1: "🌱 *Semaine 1 — Découverte*\n\nRestez en surface. Partagez vos goûts, vos habitudes, ce qui vous fait sourire au quotidien.",
+    2: "🌿 *Semaine 2 — Affinités*\n\nExplorez vos passions, vos univers, ce qui vous anime vraiment.",
+    3: "🌳 *Semaine 3 — Profondeur*\n\nVos valeurs, vos rêves, ce qui vous a construit.",
+    4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !"
+  };
+  if (data.nextWeekTheme === undefined) data.nextWeekTheme = null;
+  if (!data.gameStartDate) data.gameStartDate = null;
+  if (!data.currentWeek) data.currentWeek = 0;
   return data;
 }
 
@@ -81,12 +56,7 @@ function isAdmin(chatId) {
   return data.admins.includes(String(chatId));
 }
 
-function getText(key) {
-  const data = loadData();
-  return data.texts[key] || DEFAULT_TEXTS[key] || "";
-}
-
-// ─── PSEUDOS ──────────────────────────────────────────────
+// ─── PSEUDOS ─────────────────────────────────────────────
 const NOMS_MASCULINS = [
   "Lorenzo","Matteo","Leonardo","Marco","Luca","Giovanni","Antonio","Francesco","Alessandro","Gabriele",
   "Carlos","Miguel","Diego","Pablo","Alejandro","Javier","Rafael","Andrés","Sergio","Rodrigo",
@@ -103,13 +73,14 @@ const NOMS_FEMININS = [
 ];
 
 function assignPseudo(genre, username, data) {
-  const pool = genre === "F" ? NOMS_FEMININS : NOMS_MASCULINS;
+  const pool = (genre === "F") ? NOMS_FEMININS : NOMS_MASCULINS;
   const used = Object.values(data.registered).map(p => p.pseudo);
   const available = pool.filter(name => {
     if (used.includes(name)) return false;
     if (username) {
-      const u = username.toLowerCase(), n = name.toLowerCase();
-      if (u.includes(n.slice(0, 3)) || n.includes(u.slice(0, 3))) return false;
+      const u = username.toLowerCase();
+      const n = name.toLowerCase();
+      if (u.includes(n.slice(0,3)) || n.includes(u.slice(0,3))) return false;
     }
     return true;
   });
@@ -117,13 +88,56 @@ function assignPseudo(genre, username, data) {
   return available[Math.floor(Math.random() * available.length)];
 }
 
-// ─── THÈMES ───────────────────────────────────────────────
-const THEMES = {
-  1: "🌱 *Semaine 1 — Découverte*\n\nRestez en surface. Partagez vos goûts, vos habitudes, ce qui vous fait sourire au quotidien.",
-  2: "🌿 *Semaine 2 — Affinités*\n\nExplorez vos passions, vos univers, ce qui vous anime vraiment.",
-  3: "🌳 *Semaine 3 — Profondeur*\n\nVos valeurs, vos rêves, ce qui vous a construit.",
-  4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !",
-};
+// ─── TEXTES FIXES ─────────────────────────────────────────
+const PRINCIPE = `🎁 *Amis Invisibles — DouXeur 💥✨*
+
+Le principe est simple : pendant *4 semaines*, tu vas prendre soin d'une personne que tu ne connais pas encore — ton ami(e) invisible. Tu lui envoies des messages, des attentions, des cadeaux... sans jamais révéler qui tu es.
+
+À la fin des 4 semaines, la révélation : tout le monde découvre qui était son ami invisible. 🎉
+
+Chaque semaine, un *thème* et des *défis* te seront envoyés pour guider tes échanges.`;
+
+const REGLES = `📋 *Les règles du jeu*
+
+✅ *Ce qu'on fait :*
+— Prendre soin de son ami invisible avec sincérité
+— Communiquer via ce bot uniquement (anonymat garanti)
+— Participer aux défis et thèmes hebdomadaires
+— Offrir un cadeau à la révélation
+
+🚫 *Ce qu'on évite absolument :*
+— Pas de drague ni propositions déplacées
+— Pas de questions pour identifier l'autre
+— Pas de rendez-vous avant la révélation
+— Pas d'inactivité totale (si tu t'inscris, tu joues vraiment)
+
+⚠️ *Sanctions :*
+En cas d'infraction, signale via /signal. Une infraction grave = exclusion du jeu.
+
+🗓️ *Durée :* 4 semaines
+👫 *Binômes :* toujours 1 homme + 1 femme
+🎭 *Anonymat total* jusqu'à la révélation finale`;
+
+// ─── COMMANDES TELEGRAM (bouton ⊞) ───────────────────────
+bot.setMyCommands([
+  { command: "start", description: "Démarrer / Voir mon statut" },
+  { command: "signal", description: "Signaler une infraction anonymement" },
+  { command: "help", description: "Aide et informations" },
+]);
+
+// ─── /help ────────────────────────────────────────────────
+bot.onText(/\/help/, (msg) => {
+  const chatId = String(msg.chat.id);
+  bot.sendMessage(chatId,
+    `ℹ️ *Aide — Amis Invisibles*\n\n` +
+    `• /start — Démarrer ou voir ton statut\n` +
+    `• /signal [message] — Signaler une infraction anonymement\n` +
+    `• /help — Afficher cette aide\n\n` +
+    `💌 Pour écrire à ton ami invisible, envoie simplement un message ici.\n` +
+    `📸 Tu peux aussi envoyer des photos, vocaux, vidéos et stickers.`,
+    { parse_mode: "Markdown" }
+  );
+});
 
 // ─── /start ───────────────────────────────────────────────
 bot.onText(/\/start/, (msg) => {
@@ -145,7 +159,7 @@ bot.onText(/\/start/, (msg) => {
   data.pending[chatId] = { step: "genre" };
   saveData(data);
 
-  bot.sendMessage(chatId, `${getText("bienvenue")}\n\n---\n\n*Prêt(e) à rejoindre l'aventure ?*\n\n*Quel est ton genre ?*`, {
+  bot.sendMessage(chatId, `${PRINCIPE}\n\n---\n\n*Prêt(e) à rejoindre l'aventure ?*\n\n*Quel est ton genre ?*`, {
     parse_mode: "Markdown",
     reply_markup: {
       inline_keyboard: [
@@ -170,11 +184,11 @@ bot.on("callback_query", (query) => {
     data.pending[chatId].genre = genre;
     data.pending[chatId].step = "pays";
     saveData(data);
-    bot.sendMessage(chatId, `🌍 *Dans quel pays vis-tu ?*\n\n_(Tape simplement le nom de ton pays)_`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, `🌍 *Dans quel pays vis-tu ?*\n_(Tape simplement le nom de ton pays)_`, { parse_mode: "Markdown" });
     return;
   }
 
-  // Inscription : accepter règles
+  // Inscription : acceptation règles
   if (cb === "rules_ok") {
     const pending = data.pending[chatId];
     if (!pending || pending.step !== "rules") return;
@@ -186,8 +200,10 @@ bot.on("callback_query", (query) => {
     data.admins.forEach(adminId => {
       bot.sendMessage(adminId, `📥 *Nouvel inscrit !*\nPseudo : *${pseudo}* | Genre : ${pending.genre} | Pays : ${pending.pays}\nTotal : ${Object.keys(data.registered).length}`, { parse_mode: "Markdown" });
     });
-    const confirmMsg = getText("confirmation").replace("{pseudo}", pseudo);
-    bot.sendMessage(chatId, confirmMsg, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId,
+      `✅ *Inscription confirmée !*\n\n🎭 Ton pseudo anonyme est : *${pseudo}*\n\nTon vrai nom sera révélé uniquement à la fin du jeu. 🎉\n\n📅 Chaque semaine tu recevras un *thème* et des *défis* pour guider tes échanges.\n\n⏳ Patiente le temps que le tirage soit effectué. Tu seras notifié(e) dès que ton ami invisible t'est attribué. 🎁`,
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
@@ -198,7 +214,39 @@ bot.on("callback_query", (query) => {
     return;
   }
 
-  // Admin uniquement
+  // Validation défi par second admin
+  if (cb.startsWith("challenge_approve_")) {
+    if (!isAdmin(chatId)) return;
+    const idx = parseInt(cb.split("_")[2]);
+    const challenge = data.pendingChallenges[idx];
+    if (!challenge) { bot.sendMessage(chatId, "❌ Ce défi n'existe plus."); return; }
+    if (String(challenge.submittedBy) === String(chatId)) {
+      bot.sendMessage(chatId, "⚠️ Tu ne peux pas approuver ton propre défi. Un autre admin doit valider.");
+      return;
+    }
+    const participants = Object.values(data.registered);
+    participants.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge.text}`, { parse_mode: "Markdown" }));
+    data.customChallenges.push({ text: challenge.text, date: new Date().toISOString() });
+    data.pendingChallenges.splice(idx, 1);
+    saveData(data);
+    bot.sendMessage(chatId, `✅ Défi approuvé et envoyé à ${participants.length} participant(s).`);
+    bot.sendMessage(challenge.submittedBy, `✅ Ton défi a été approuvé et envoyé à tous les participants !`);
+    return;
+  }
+
+  if (cb.startsWith("challenge_reject_")) {
+    if (!isAdmin(chatId)) return;
+    const idx = parseInt(cb.split("_")[2]);
+    const challenge = data.pendingChallenges[idx];
+    if (!challenge) { bot.sendMessage(chatId, "❌ Ce défi n'existe plus."); return; }
+    data.pendingChallenges.splice(idx, 1);
+    saveData(data);
+    bot.sendMessage(chatId, "❌ Défi refusé.");
+    bot.sendMessage(challenge.submittedBy, `❌ Ton défi a été refusé par un autre admin.`);
+    return;
+  }
+
+  // Zone admin
   if (!isAdmin(chatId)) return;
 
   if (cb === "admin_list") { sendAdminList(chatId); return; }
@@ -207,51 +255,54 @@ bot.on("callback_query", (query) => {
   if (cb === "admin_reports") { sendAdminReports(chatId); return; }
   if (cb === "admin_back") { sendAdminDashboard(chatId); return; }
 
-  if (cb === "admin_theme_menu") {
-    bot.sendMessage(chatId, "📅 *Quel thème envoyer ?*", {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Semaine 1 🌱", callback_data: "admin_theme_1" }, { text: "Semaine 2 🌿", callback_data: "admin_theme_2" }],
-          [{ text: "Semaine 3 🌳", callback_data: "admin_theme_3" }, { text: "Semaine 4 🎁", callback_data: "admin_theme_4" }],
-          [{ text: "⬅️ Retour", callback_data: "admin_back" }],
-        ],
-      },
-    });
-    return;
-  }
-  if (cb.startsWith("admin_theme_")) { sendThemeToAll(chatId, cb.split("_")[2]); return; }
-
   if (cb === "admin_challenge") {
     data.pending[chatId] = { step: "admin_challenge" };
     saveData(data);
-    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi à diffuser à tous :*", { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi :*\n\nIl sera soumis à validation par un autre admin avant d'être diffusé.", { parse_mode: "Markdown" });
     return;
   }
 
-  // Édition des textes
-  if (cb === "admin_edit_texts") {
-    bot.sendMessage(chatId, "✏️ *Quel message modifier ?*", {
+  if (cb === "admin_theme_menu") {
+    const themes = data.themes;
+    bot.sendMessage(chatId, "📅 *Gérer les thèmes*\n\nChoisis un thème à envoyer ou modifier :", {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🎁 Message de bienvenue", callback_data: "edit_bienvenue" }],
-          [{ text: "📋 Règles du jeu", callback_data: "edit_regles" }],
-          [{ text: "✅ Message de confirmation", callback_data: "edit_confirmation" }],
+          [{ text: "📤 Envoyer S1", callback_data: "admin_theme_send_1" }, { text: "✏️ Modifier S1", callback_data: "admin_theme_edit_1" }],
+          [{ text: "📤 Envoyer S2", callback_data: "admin_theme_send_2" }, { text: "✏️ Modifier S2", callback_data: "admin_theme_edit_2" }],
+          [{ text: "📤 Envoyer S3", callback_data: "admin_theme_send_3" }, { text: "✏️ Modifier S3", callback_data: "admin_theme_edit_3" }],
+          [{ text: "📤 Envoyer S4", callback_data: "admin_theme_send_4" }, { text: "✏️ Modifier S4", callback_data: "admin_theme_edit_4" }],
+          [{ text: "📝 Définir thème semaine prochaine", callback_data: "admin_theme_next" }],
           [{ text: "⬅️ Retour", callback_data: "admin_back" }],
         ],
       },
     });
     return;
   }
-  if (cb.startsWith("edit_")) {
-    const key = cb.replace("edit_", "");
-    data.pending[chatId] = { step: "edit_text", key };
+
+  if (cb.startsWith("admin_theme_send_")) {
+    const week = cb.split("_")[3];
+    sendThemeToAll(chatId, week);
+    return;
+  }
+
+  if (cb.startsWith("admin_theme_edit_")) {
+    const week = cb.split("_")[3];
+    data.pending[chatId] = { step: "admin_theme_edit", week };
     saveData(data);
-    const current = getText(key);
-    const hint = key === "confirmation" ? "\n\n💡 Utilise `{pseudo}` pour insérer le pseudo attribué." : "";
     bot.sendMessage(chatId,
-      `✏️ *Modifier : ${key}*\n\nTexte actuel :\n\n${current}\n\n---\nEnvoie le nouveau texte.${hint}`,
+      `✏️ *Modifier le thème Semaine ${week}*\n\nThème actuel :\n${data.themes[week]}\n\n_Envoie le nouveau texte du thème :_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  if (cb === "admin_theme_next") {
+    data.pending[chatId] = { step: "admin_theme_next" };
+    saveData(data);
+    const current = data.nextWeekTheme || "_Aucun thème défini pour la semaine prochaine._";
+    bot.sendMessage(chatId,
+      `📝 *Thème semaine prochaine*\n\nActuel : ${current}\n\n_Envoie le nouveau thème pour la semaine prochaine :_`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -264,7 +315,17 @@ bot.on("callback_query", (query) => {
     });
     return;
   }
+
   if (cb === "admin_reveal_confirm") { revealAll(chatId); return; }
+
+  if (cb === "admin_start_game") {
+    data.gameStartDate = new Date().toISOString();
+    data.currentWeek = 1;
+    saveData(data);
+    bot.sendMessage(chatId, `✅ *Jeu lancé !* Semaine 1 démarrée le ${new Date().toLocaleDateString("fr-FR")}.\n\nLes rappels hebdomadaires sont maintenant actifs.`, { parse_mode: "Markdown" });
+    sendAdminDashboard(chatId);
+    return;
+  }
 });
 
 // ─── MESSAGES TEXTE ───────────────────────────────────────
@@ -274,38 +335,74 @@ bot.on("message", (msg) => {
   const data = loadData();
   const pending = data.pending[chatId];
 
-  // Inscription : pays
+  // Étape : pays
   if (pending && pending.step === "pays") {
     pending.pays = msg.text.trim();
     pending.step = "rules";
     saveData(data);
-    bot.sendMessage(chatId, `${getText("regles")}\n\n---\n\n*Tu as bien lu et compris les règles ?*`, {
+    bot.sendMessage(chatId, `${REGLES}\n\n---\n\n*Tu as bien lu et compris les règles ?*`, {
       parse_mode: "Markdown",
       reply_markup: { inline_keyboard: [[{ text: "✅ J'ai compris et j'accepte", callback_data: "rules_ok" }, { text: "❌ Je refuse", callback_data: "rules_refuse" }]] },
     });
     return;
   }
 
-  // Admin : défi
+  // Admin : nouveau défi
   if (pending && pending.step === "admin_challenge" && isAdmin(chatId)) {
-    const challenge = msg.text.trim();
-    const registered = Object.values(data.registered);
-    registered.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge}`, { parse_mode: "Markdown" }));
+    const text = msg.text.trim();
+    const idx = data.pendingChallenges.length;
+    data.pendingChallenges.push({ text, submittedBy: chatId, date: new Date().toISOString() });
     delete data.pending[chatId];
-    data.customChallenges.push({ text: challenge, date: new Date().toISOString() });
     saveData(data);
-    bot.sendMessage(chatId, `✅ Défi envoyé à ${registered.length} participant(s).`);
+
+    bot.sendMessage(chatId, `✅ Défi soumis ! En attente de validation par un autre admin.`);
+
+    // Notifier les autres admins
+    data.admins.filter(a => a !== chatId).forEach(adminId => {
+      bot.sendMessage(adminId,
+        `🎯 *Nouveau défi à valider*\n\n"${text}"\n\nSoumis par un co-admin. Approuves-tu l'envoi à tous les participants ?`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ Approuver", callback_data: `challenge_approve_${idx}` },
+              { text: "❌ Refuser", callback_data: `challenge_reject_${idx}` },
+            ]],
+          },
+        }
+      );
+    });
+
+    // Si un seul admin, envoi direct
+    if (data.admins.length === 1) {
+      const participants = Object.values(data.registered);
+      participants.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${text}`, { parse_mode: "Markdown" }));
+      data.customChallenges.push({ text, date: new Date().toISOString() });
+      data.pendingChallenges.pop();
+      saveData(data);
+      bot.sendMessage(chatId, `✅ Tu es le seul admin — défi envoyé directement à ${participants.length} participant(s).`);
+    }
     sendAdminDashboard(chatId);
     return;
   }
 
-  // Admin : édition texte
-  if (pending && pending.step === "edit_text" && isAdmin(chatId)) {
-    const key = pending.key;
-    data.texts[key] = msg.text.trim();
+  // Admin : modifier thème existant
+  if (pending && pending.step === "admin_theme_edit" && isAdmin(chatId)) {
+    const week = pending.week;
+    data.themes[week] = msg.text.trim();
     delete data.pending[chatId];
     saveData(data);
-    bot.sendMessage(chatId, `✅ *Message "${key}" mis à jour avec succès !*`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, `✅ Thème Semaine ${week} mis à jour !\n\n${data.themes[week]}`, { parse_mode: "Markdown" });
+    sendAdminDashboard(chatId);
+    return;
+  }
+
+  // Admin : thème semaine prochaine
+  if (pending && pending.step === "admin_theme_next" && isAdmin(chatId)) {
+    data.nextWeekTheme = msg.text.trim();
+    delete data.pending[chatId];
+    saveData(data);
+    bot.sendMessage(chatId, `✅ Thème de la semaine prochaine enregistré !\n\n${data.nextWeekTheme}`, { parse_mode: "Markdown" });
     sendAdminDashboard(chatId);
     return;
   }
@@ -314,8 +411,8 @@ bot.on("message", (msg) => {
   const participant = data.registered[chatId];
   if (!participant) { bot.sendMessage(chatId, "👉 Tape /start pour t'inscrire au jeu."); return; }
   if (!participant.pairedWith) { bot.sendMessage(chatId, "⏳ Le tirage n'a pas encore eu lieu. Patiente... 🎯"); return; }
-  bot.sendMessage(participant.pairedWith, `📨\n\n${msg.text}`);
-  bot.sendMessage(chatId, "✅");
+  bot.sendMessage(participant.pairedWith, `💌 *Message de ton ami invisible :*\n\n${msg.text}`, { parse_mode: "Markdown" });
+  bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
 });
 
 // ─── RELAIS MEDIA ─────────────────────────────────────────
@@ -325,14 +422,13 @@ function relayMedia(msg, type) {
   const p = data.registered[chatId];
   if (!p || !p.pairedWith) return;
   try {
-    if (type === "photo") bot.sendPhoto(p.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: "📨" });
-    else if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: "📨" });
+    if (type === "photo") bot.sendPhoto(p.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: "📸 *Photo de ton ami invisible* 🤫", parse_mode: "Markdown" });
+    else if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: "🎙️ *Vocal de ton ami invisible* 🤫", parse_mode: "Markdown" });
     else if (type === "sticker") bot.sendSticker(p.pairedWith, msg.sticker.file_id);
-    else if (type === "video") bot.sendVideo(p.pairedWith, msg.video.file_id, { caption: "📨" });
-    bot.sendMessage(chatId, "✅");
+    else if (type === "video") bot.sendVideo(p.pairedWith, msg.video.file_id, { caption: "🎥 *Vidéo de ton ami invisible* 🤫", parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
   } catch (e) { bot.sendMessage(chatId, "⚠️ Erreur lors de l'envoi. Réessaie."); }
 }
-
 bot.on("photo", (msg) => relayMedia(msg, "photo"));
 bot.on("voice", (msg) => relayMedia(msg, "voice"));
 bot.on("sticker", (msg) => relayMedia(msg, "sticker"));
@@ -346,8 +442,8 @@ bot.onText(/\/signal (.+)/, (msg, match) => {
   const message = match[1].trim();
   data.reports.push({ message, date: new Date().toISOString() });
   saveData(data);
-  data.admins.forEach(adminId => bot.sendMessage(adminId, `🚨 *Signalement*\n\n${message}`, { parse_mode: "Markdown" }));
-  bot.sendMessage(chatId, "✅ Signalement transmis anonymement.");
+  data.admins.forEach(adminId => bot.sendMessage(adminId, `🚨 *Nouveau signalement*\n\n${message}`, { parse_mode: "Markdown" }));
+  bot.sendMessage(chatId, "✅ Signalement transmis anonymement aux organisateurs.");
 });
 
 // ─── /addadmin ────────────────────────────────────────────
@@ -373,16 +469,25 @@ function sendAdminDashboard(chatId) {
   const h = Object.values(data.registered).filter(p => p.genre === "H").length;
   const f = Object.values(data.registered).filter(p => p.genre === "F").length;
   const paires = Math.floor(Object.keys(data.pairs).length / 2);
+  const nextTheme = data.nextWeekTheme ? "✅ Défini" : "⚠️ Non défini";
+  const gameStatus = data.gameStartDate ? `Semaine ${data.currentWeek} en cours` : "⏳ Pas encore lancé";
+
   bot.sendMessage(chatId,
-    `🎛️ *Dashboard Admin*\n\n👥 Inscrits : *${total}* (${h}H / ${f}F)\n👫 Binômes : *${paires}*\n🚨 Signalements : *${data.reports.length}*`,
+    `🎛️ *Dashboard Admin — Amis Invisibles*\n\n` +
+    `👥 Inscrits : *${total}* (${h}H / ${f}F)\n` +
+    `👫 Binômes : *${paires}*\n` +
+    `🎮 Jeu : *${gameStatus}*\n` +
+    `📅 Thème S. prochaine : *${nextTheme}*\n` +
+    `🚨 Signalements : *${data.reports.length}*\n` +
+    `⏳ Défis en attente : *${data.pendingChallenges.length}*`,
     {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
           [{ text: "👥 Inscrits", callback_data: "admin_list" }, { text: "👫 Binômes", callback_data: "admin_pairs" }],
-          [{ text: "📅 Thème", callback_data: "admin_theme_menu" }, { text: "🎯 Défi", callback_data: "admin_challenge" }],
-          [{ text: "✏️ Modifier les messages", callback_data: "admin_edit_texts" }],
-          [{ text: "🚨 Signalements", callback_data: "admin_reports" }, { text: "🎉 Révélation", callback_data: "admin_reveal" }],
+          [{ text: "📅 Thèmes", callback_data: "admin_theme_menu" }, { text: "🎯 Envoyer défi", callback_data: "admin_challenge" }],
+          [{ text: "🚨 Signalements", callback_data: "admin_reports" }, { text: "🎮 Lancer le jeu", callback_data: "admin_start_game" }],
+          [{ text: "🎉 Révélation finale", callback_data: "admin_reveal" }],
         ],
       },
     }
@@ -393,7 +498,7 @@ function sendAdminList(chatId) {
   const data = loadData();
   const list = Object.values(data.registered);
   if (list.length === 0) { bot.sendMessage(chatId, "Aucun inscrit pour l'instant."); return; }
-  const text = list.map((p, i) => `${i + 1}. *${p.pseudo}* — ${p.genre} — ${p.pays} — ${p.pairedWith ? "✅" : "⏳"}`).join("\n");
+  const text = list.map((p, i) => `${i+1}. *${p.pseudo}* — ${p.genre} — ${p.pays} — ${p.pairedWith ? "✅" : "⏳"}`).join("\n");
   bot.sendMessage(chatId, `📋 *Participants (${list.length}) :*\n\n${text}`, {
     parse_mode: "Markdown",
     reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] }
@@ -406,31 +511,30 @@ function sendAdminPairs(chatId) {
   const h = unpaired.filter(p => p.genre === "H").length;
   const f = unpaired.filter(p => p.genre === "F").length;
   const paires = Math.floor(Object.keys(data.pairs).length / 2);
-  const canPair = h > 0 && f > 0;
-  bot.sendMessage(chatId,
-    `👫 *Binômes*\n\nSans binôme : *${unpaired.length}* (${h}H / ${f}F)\nActifs : *${paires}*\n\n${canPair ? `✅ Tirage possible : ${Math.min(h, f)} binôme(s)` : "⚠️ Besoin d'au moins 1H + 1F"}`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: { inline_keyboard: [[{ text: "🎲 Lancer le tirage", callback_data: "admin_autopair" }], [{ text: "⬅️ Retour", callback_data: "admin_back" }]] },
-    }
-  );
+  let text = `👫 *Gestion des binômes*\n\nSans binôme : *${unpaired.length}* (${h}H / ${f}F)\nBinômes actifs : *${paires}*\n\n`;
+  text += (h > 0 && f > 0) ? `✅ Tirage possible : ${Math.min(h,f)} binôme(s)` : `⚠️ Besoin d'au moins 1H + 1F sans binôme`;
+  bot.sendMessage(chatId, text, {
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: [[{ text: "🎲 Tirage automatique", callback_data: "admin_autopair" }], [{ text: "⬅️ Retour", callback_data: "admin_back" }]] },
+  });
 }
 
 function autoCreatePairs(chatId) {
   const data = loadData();
   const hommes = Object.values(data.registered).filter(p => p.genre === "H" && !p.pairedWith);
   const femmes = Object.values(data.registered).filter(p => p.genre === "F" && !p.pairedWith);
-  if (!hommes.length || !femmes.length) { bot.sendMessage(chatId, "❌ Pas assez de participants."); return; }
+  if (hommes.length === 0 || femmes.length === 0) { bot.sendMessage(chatId, "❌ Pas assez de participants."); return; }
   const shuffle = arr => arr.sort(() => Math.random() - 0.5);
   shuffle(hommes); shuffle(femmes);
   const count = Math.min(hommes.length, femmes.length);
   for (let i = 0; i < count; i++) {
-    const h = hommes[i], f = femmes[i];
+    const h = hommes[i]; const f = femmes[i];
     data.registered[h.chatId].pairedWith = f.chatId;
     data.registered[f.chatId].pairedWith = h.chatId;
     data.pairs[h.chatId] = f.chatId;
     data.pairs[f.chatId] = h.chatId;
-    const notif = `🎉 *Le jeu commence !*\n\nTon ami invisible t'attend. Écris-lui directement ici — ton identité restera secrète jusqu'à la révélation. 🤫\n\n${THEMES[1]}`;
+    const theme1 = data.themes[1];
+    const notif = `🎉 *Le jeu commence !*\n\nTon ami invisible t'attend. Écris-lui directement ici — ton identité restera secrète jusqu'à la révélation. 🤫\n\n${theme1}`;
     bot.sendMessage(h.chatId, notif, { parse_mode: "Markdown" });
     bot.sendMessage(f.chatId, notif, { parse_mode: "Markdown" });
   }
@@ -440,17 +544,19 @@ function autoCreatePairs(chatId) {
 }
 
 function sendThemeToAll(chatId, week) {
-  const theme = THEMES[week]; if (!theme) return;
   const data = loadData();
-  Object.values(data.registered).forEach(p => bot.sendMessage(p.chatId, `📅 *Thème de la semaine :*\n\n${theme}`, { parse_mode: "Markdown" }));
-  bot.sendMessage(chatId, `✅ Thème S${week} envoyé.`);
+  const theme = data.themes[week];
+  if (!theme) return;
+  const participants = Object.values(data.registered);
+  participants.forEach(p => bot.sendMessage(p.chatId, `📅 *Thème de la semaine :*\n\n${theme}`, { parse_mode: "Markdown" }));
+  bot.sendMessage(chatId, `✅ Thème S${week} envoyé à ${participants.length} participant(s).`);
   sendAdminDashboard(chatId);
 }
 
 function sendAdminReports(chatId) {
   const data = loadData();
-  if (!data.reports.length) { bot.sendMessage(chatId, "Aucun signalement. ✅"); return; }
-  const text = data.reports.map((r, i) => `${i + 1}. ${r.message}\n_${new Date(r.date).toLocaleString("fr-FR")}_`).join("\n\n");
+  if (data.reports.length === 0) { bot.sendMessage(chatId, "Aucun signalement. ✅"); return; }
+  const text = data.reports.map((r, i) => `${i+1}. ${r.message}\n_${new Date(r.date).toLocaleString("fr-FR")}_`).join("\n\n");
   bot.sendMessage(chatId, `🚨 *Signalements :*\n\n${text}`, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] } });
 }
 
@@ -460,7 +566,7 @@ function revealAll(chatId) {
   Object.entries(data.pairs).forEach(([id1, id2]) => {
     if (done.has(id1) || done.has(id2)) return;
     done.add(id1); done.add(id2);
-    const p1 = data.registered[id1], p2 = data.registered[id2];
+    const p1 = data.registered[id1]; const p2 = data.registered[id2];
     if (!p1 || !p2) return;
     const r1 = p2.realUsername ? `@${p2.realUsername}` : p2.pseudo;
     const r2 = p1.realUsername ? `@${p1.realUsername}` : p1.pseudo;
@@ -468,7 +574,33 @@ function revealAll(chatId) {
     bot.sendMessage(id2, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r2}* ! 🎁\n\nMerci d'avoir joué. 🖤`, { parse_mode: "Markdown" });
     count++;
   });
-  bot.sendMessage(chatId, `✅ Révélation envoyée à ${count} binôme(s). 🎊`);
+  bot.sendMessage(chatId, `✅ Révélation envoyée à ${count} binôme(s). Le jeu est terminé. 🎊`);
 }
+
+// ─── RAPPELS QUOTIDIENS ───────────────────────────────────
+function checkDailyReminder() {
+  const data = loadData();
+  if (!data.gameStartDate) return;
+
+  const today = new Date().toDateString();
+  if (data.lastReminderDate === today) return;
+
+  // Si thème semaine prochaine pas défini → rappel aux admins
+  if (!data.nextWeekTheme) {
+    data.admins.forEach(adminId => {
+      bot.sendMessage(adminId,
+        `⏰ *Rappel quotidien*\n\n📅 Le thème de la semaine prochaine n'est pas encore défini !\n\nVa dans le dashboard → Thèmes → "Définir thème semaine prochaine" pour éviter d'être pris de court. 🎯`,
+        { parse_mode: "Markdown" }
+      );
+    });
+    data.lastReminderDate = today;
+    saveData(data);
+  }
+}
+
+// Vérification toutes les heures
+setInterval(checkDailyReminder, 60 * 60 * 1000);
+// Vérification au démarrage aussi
+setTimeout(checkDailyReminder, 5000);
 
 console.log("🤖 AmiInvisibleBot v3 is running...");
