@@ -1,63 +1,85 @@
 const TelegramBot = require("node-telegram-bot-api");
-const fs = require("fs");
+const mongoose = require("mongoose");
 
 // ─── CONFIG ───────────────────────────────────────────────
-const TOKEN = process.env.BOT_TOKEN || "REMPLACE_PAR_TON_TOKEN";
-const MAIN_ADMIN = process.env.ADMIN_ID || "REMPLACE_PAR_TON_ID";
-const DB_FILE = "./data.json";
+const TOKEN = process.env.BOT_TOKEN || "REMPLACE";
+const MAIN_ADMIN = process.env.ADMIN_ID || "REMPLACE";
+const MONGODB_URI = process.env.MONGODB_URI || "REMPLACE";
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+// ─── MONGOOSE SCHEMAS ─────────────────────────────────────
+const participantSchema = new mongoose.Schema({
+  chatId: { type: String, unique: true },
+  pseudo: String,
+  realUsername: String,
+  genre: String,
+  pays: String,
+  pairedWith: { type: String, default: null },
+  confirmed: { type: Boolean, default: false },
+});
 
-// ─── BASE DE DONNÉES ──────────────────────────────────────
-function loadData() {
-  if (!fs.existsSync(DB_FILE)) {
-    return {
-      registered: {}, pairs: {}, pending: {},
-      admins: [String(MAIN_ADMIN)],
-      reports: [],
-      customChallenges: [],
-      pendingChallenges: [],
-      themes: {
-        1: "🌱 *Semaine 1 — Découverte*\n\nRestez en surface. Partagez vos goûts, vos habitudes, ce qui vous fait sourire au quotidien.",
-        2: "🌿 *Semaine 2 — Affinités*\n\nExplorez vos passions, vos univers, ce qui vous anime vraiment.",
-        3: "🌳 *Semaine 3 — Profondeur*\n\nVos valeurs, vos rêves, ce qui vous a construit.",
-        4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !"
-      },
-      nextWeekTheme: null,
-      gameStartDate: null,
-      currentWeek: 0,
-      reminderActive: false,
-    };
-  }
-  const data = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
-  if (!data.admins) data.admins = [String(MAIN_ADMIN)];
-  if (!data.reports) data.reports = [];
-  if (!data.customChallenges) data.customChallenges = [];
-  if (!data.pendingChallenges) data.pendingChallenges = [];
-  if (!data.pending) data.pending = {};
-  if (!data.themes) data.themes = {
-    1: "🌱 *Semaine 1 — Découverte*\n\nRestez en surface. Partagez vos goûts, vos habitudes, ce qui vous fait sourire au quotidien.",
-    2: "🌿 *Semaine 2 — Affinités*\n\nExplorez vos passions, vos univers, ce qui vous anime vraiment.",
-    3: "🌳 *Semaine 3 — Profondeur*\n\nVos valeurs, vos rêves, ce qui vous a construit.",
-    4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !"
-  };
-  if (data.nextWeekTheme === undefined) data.nextWeekTheme = null;
-  if (data.gameStartDate === undefined) data.gameStartDate = null;
-  if (data.currentWeek === undefined) data.currentWeek = 0;
-  if (data.reminderActive === undefined) data.reminderActive = false;
-  return data;
+const configSchema = new mongoose.Schema({
+  key: { type: String, unique: true },
+  value: mongoose.Schema.Types.Mixed,
+});
+
+const reportSchema = new mongoose.Schema({
+  message: String,
+  date: { type: Date, default: Date.now },
+});
+
+const challengeSchema = new mongoose.Schema({
+  text: String,
+  submittedBy: String,
+  approved: { type: Boolean, default: false },
+  date: { type: Date, default: Date.now },
+});
+
+const giftSchema = new mongoose.Schema({
+  code: { type: String, unique: true },
+  fromId: String,
+  toId: String,
+  description: String,
+  photoFileId: { type: String, default: null },
+  status: { type: String, default: "pending" }, // pending / received / delivered / problem
+  date: { type: Date, default: Date.now },
+});
+
+const pendingSchema = new mongoose.Schema({
+  chatId: { type: String, unique: true },
+  data: mongoose.Schema.Types.Mixed,
+});
+
+const Participant = mongoose.model("Participant", participantSchema);
+const Config = mongoose.model("Config", configSchema);
+const Report = mongoose.model("Report", reportSchema);
+const Challenge = mongoose.model("Challenge", challengeSchema);
+const Gift = mongoose.model("Gift", giftSchema);
+const Pending = mongoose.model("Pending", pendingSchema);
+
+// ─── CONFIG HELPERS ───────────────────────────────────────
+async function getConfig(key, defaultValue = null) {
+  const doc = await Config.findOne({ key });
+  return doc ? doc.value : defaultValue;
 }
 
-function saveData(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+async function setConfig(key, value) {
+  await Config.findOneAndUpdate({ key }, { value }, { upsert: true });
 }
 
-function isAdmin(chatId) {
-  const data = loadData();
-  return data.admins.includes(String(chatId));
+async function getPending(chatId) {
+  const doc = await Pending.findOne({ chatId });
+  return doc ? doc.data : null;
 }
 
-// ─── PSEUDOS ANONYMES ────────────────────────────────────
+async function setPending(chatId, data) {
+  await Pending.findOneAndUpdate({ chatId }, { data }, { upsert: true });
+}
+
+async function clearPending(chatId) {
+  await Pending.deleteOne({ chatId });
+}
+
+// ─── PSEUDOS ──────────────────────────────────────────────
 const NOMS_MASCULINS = [
   "Lorenzo","Matteo","Leonardo","Marco","Luca","Giovanni","Antonio","Francesco","Alessandro","Gabriele",
   "Carlos","Miguel","Diego","Pablo","Alejandro","Javier","Rafael","Andrés","Sergio","Rodrigo",
@@ -65,7 +87,6 @@ const NOMS_MASCULINS = [
   "Nico","Dante","Emilio","César","Ivan","Adrián","Tomás","Víctor","Hugo","Simone",
   "Davide","Riccardo","Stefano","Claudio","Cristiano","Jorge","Manuel","Pedro","Álvaro","Fernando"
 ];
-
 const NOMS_FEMININS = [
   "Sofia","Isabella","Giulia","Valentina","Chiara","Francesca","Alessia","Martina","Aurora","Giorgia",
   "Camila","Valeria","Lucia","Elena","Daniela","Paola","Andrea","Natalia","Gabriela","Mariana",
@@ -74,9 +95,10 @@ const NOMS_FEMININS = [
   "Serena","Elisa","Federica","Miriam","Cristina","Paula","Raquel","Teresa","Inês","Catalina"
 ];
 
-function assignPseudo(genre, username, data) {
-  const pool = (genre === "F") ? NOMS_FEMININS : NOMS_MASCULINS;
-  const used = Object.values(data.registered).map(p => p.pseudo);
+async function assignPseudo(genre, username) {
+  const pool = genre === "F" ? NOMS_FEMININS : NOMS_MASCULINS;
+  const existing = await Participant.find({}, "pseudo");
+  const used = existing.map(p => p.pseudo);
   const available = pool.filter(name => {
     if (used.includes(name)) return false;
     if (username) {
@@ -88,6 +110,13 @@ function assignPseudo(genre, username, data) {
   });
   if (available.length === 0) return pool[Math.floor(Math.random() * pool.length)];
   return available[Math.floor(Math.random() * available.length)];
+}
+
+function generateGiftCode() {
+  const animals = ["LION","TIGRE","AIGLE","LOUP","PANDA","COBRA","BISON","CERF","LYNX","OURS"];
+  const colors = ["BLEU","ROUGE","VERT","GOLD","NOIR","ROSE","GRIS","JADE","RUBY","AZUR"];
+  const num = Math.floor(Math.random() * 90) + 10;
+  return `${animals[Math.floor(Math.random()*animals.length)]}-${num}-${colors[Math.floor(Math.random()*colors.length)]}`;
 }
 
 // ─── TEXTES ───────────────────────────────────────────────
@@ -114,43 +143,116 @@ const REGLES = `📋 *Les règles du jeu*
 — Pas d'inactivité totale
 
 ⚠️ *Sanctions :*
-En cas d'infraction, signale via /signal. Une infraction grave = exclusion.
+En cas d'infraction, signale via /signal. Une infraction grave = exclusion du jeu.
 
 🗓️ *Durée :* 4 semaines
 👫 *Binômes :* toujours 1 homme + 1 femme
 🎭 *Anonymat total* jusqu'à la révélation finale`;
 
-// ─── COMMANDES TELEGRAM (bouton ⊞) ───────────────────────
-function setCommands() {
-  bot.setMyCommands([
-    { command: "start", description: "Démarrer / Voir mon statut" },
-    { command: "signal", description: "Signaler une infraction anonymement" },
-    { command: "help", description: "Aide et informations" },
-  ]);
+const DEFAULT_THEMES = {
+  1: "🌱 *Semaine 1 — Découverte*\n\nRestez en surface. Partagez vos goûts, vos habitudes, ce qui vous fait sourire.",
+  2: "🌿 *Semaine 2 — Affinités*\n\nExplorez vos passions, vos univers, ce qui vous anime vraiment.",
+  3: "🌳 *Semaine 3 — Profondeur*\n\nVos valeurs, vos rêves, ce qui vous a construit.",
+  4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !"
+};
+
+// ─── BOT INIT ─────────────────────────────────────────────
+const bot = new TelegramBot(TOKEN, { polling: true });
+
+bot.setMyCommands([
+  { command: "start", description: "Démarrer / Voir mon statut" },
+  { command: "cadeau", description: "Envoyer un cadeau à ton ami invisible" },
+  { command: "signal", description: "Signaler une infraction anonymement" },
+  { command: "help", description: "Aide et informations" },
+]);
+
+// ─── REPLY KEYBOARDS ──────────────────────────────────────
+const participantKeyboard = {
+  keyboard: [
+    [{ text: "📊 Mon statut" }, { text: "🎁 Envoyer cadeau" }, { text: "🚨 Signaler" }],
+    [{ text: "❓ Aide" }],
+  ],
+  resize_keyboard: true,
+  persistent: true,
+};
+
+const adminKeyboard = {
+  keyboard: [
+    [{ text: "👥 Inscrits" }, { text: "👫 Binômes" }, { text: "📅 Thèmes" }],
+    [{ text: "🎯 Défi" }, { text: "🚨 Signalements" }, { text: "🎉 Révélation" }],
+    [{ text: "🎮 Lancer jeu" }],
+  ],
+  resize_keyboard: true,
+  persistent: true,
+};
+
+const douxeurKeyboard = {
+  keyboard: [
+    [{ text: "📦 Cadeaux en attente" }, { text: "✅ Cadeau reçu" }, { text: "🎁 Cadeau remis" }],
+    [{ text: "⚠️ Problème cadeau" }],
+  ],
+  resize_keyboard: true,
+  persistent: true,
+};
+
+// ─── HELPERS ──────────────────────────────────────────────
+async function isAdmin(chatId) {
+  const admins = await getConfig("admins", [String(MAIN_ADMIN)]);
+  return admins.includes(String(chatId));
 }
-setCommands();
+
+async function isDouxeur(chatId) {
+  const douxeurId = await getConfig("douxeurId", null);
+  return douxeurId && String(douxeurId) === String(chatId);
+}
+
+async function getAdmins() {
+  return await getConfig("admins", [String(MAIN_ADMIN)]);
+}
+
+async function notifyAdmins(text, options = {}) {
+  const admins = await getAdmins();
+  for (const adminId of admins) {
+    await bot.sendMessage(adminId, text, options);
+  }
+}
+
+// ─── /help ────────────────────────────────────────────────
+bot.onText(/\/help|❓ Aide/, async (msg) => {
+  const chatId = String(msg.chat.id);
+  if (await isAdmin(chatId)) { await sendAdminDashboard(chatId); return; }
+  if (await isDouxeur(chatId)) { await sendDouxeurDashboard(chatId); return; }
+  bot.sendMessage(chatId,
+    `ℹ️ *Aide — Amis Invisibles*\n\n` +
+    `• /start — Démarrer ou voir ton statut\n` +
+    `• /cadeau — Envoyer un cadeau à ton ami invisible\n` +
+    `• /signal — Signaler une infraction anonymement\n` +
+    `• /help — Afficher cette aide\n\n` +
+    `💌 Pour écrire à ton ami invisible, envoie simplement un message ici.\n` +
+    `📸 Tu peux aussi envoyer photos, vocaux, vidéos et stickers.`,
+    { parse_mode: "Markdown", reply_markup: participantKeyboard }
+  );
+});
 
 // ─── /start ───────────────────────────────────────────────
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start|📊 Mon statut/, async (msg) => {
   const chatId = String(msg.chat.id);
-  const data = loadData();
 
-  if (isAdmin(chatId)) { sendAdminDashboard(chatId); return; }
+  if (await isAdmin(chatId)) { await sendAdminDashboard(chatId); return; }
+  if (await isDouxeur(chatId)) { await sendDouxeurDashboard(chatId); return; }
 
-  if (data.registered[chatId]) {
-    const p = data.registered[chatId];
+  const participant = await Participant.findOne({ chatId });
+  if (participant) {
     bot.sendMessage(chatId,
-      `Tu es déjà inscrit(e) sous le pseudo *${p.pseudo}*. 🎭\n\n` +
-      (p.pairedWith ? `Ton ami invisible t'attend — écris-lui directement ici. 💌` : `Le tirage n'a pas encore eu lieu. Patiente... 🎯`),
-      { parse_mode: "Markdown" }
+      `Tu es inscrit(e) sous le pseudo *${participant.pseudo}*. 🎭\n\n` +
+      (participant.pairedWith ? `Ton ami invisible t'attend — écris-lui directement ici. 💌` : `Le tirage n'a pas encore eu lieu. Patiente... 🎯`),
+      { parse_mode: "Markdown", reply_markup: participantKeyboard }
     );
     return;
   }
 
-  data.pending[chatId] = { step: "genre" };
-  saveData(data);
-
-  bot.sendMessage(chatId, `${PRINCIPE}\n\n---\n\n*Prêt(e) à rejoindre l'aventure ?*\nCommençons ton inscription. 👇\n\n*Quel est ton genre ?*`, {
+  await setPending(chatId, { step: "genre" });
+  bot.sendMessage(chatId, `${PRINCIPE}\n\n---\n\n*Prêt(e) à rejoindre l'aventure ?*\n\n*Quel est ton genre ?*`, {
     parse_mode: "Markdown",
     reply_markup: {
       inline_keyboard: [
@@ -161,120 +263,114 @@ bot.onText(/\/start/, (msg) => {
   });
 });
 
-// ─── /help ────────────────────────────────────────────────
-bot.onText(/\/help/, (msg) => {
+// ─── /cadeau ──────────────────────────────────────────────
+bot.onText(/\/cadeau|🎁 Envoyer cadeau/, async (msg) => {
   const chatId = String(msg.chat.id);
+  const participant = await Participant.findOne({ chatId });
+  if (!participant) { bot.sendMessage(chatId, "👉 Tape /start pour t'inscrire."); return; }
+  if (!participant.pairedWith) { bot.sendMessage(chatId, "⏳ Le tirage n'a pas encore eu lieu."); return; }
+  await setPending(chatId, { step: "cadeau_description" });
   bot.sendMessage(chatId,
-    `ℹ️ *Aide — Amis Invisibles*\n\n` +
-    `*/start* — Démarrer le bot ou voir ton statut\n` +
-    `*/signal [message]* — Signaler une infraction anonymement\n` +
-    `*/help* — Afficher cette aide\n\n` +
-    `Pour toute question, contacte l'organisateur du jeu.`,
+    `🎁 *Envoyer un cadeau à ton ami invisible*\n\nCommençons ! Décris ton cadeau en quelques mots.\n_(ex: un livre, un parfum, une box surprise...)_`,
     { parse_mode: "Markdown" }
   );
 });
 
-// ─── CALLBACK QUERIES ─────────────────────────────────────
-bot.on("callback_query", (query) => {
+// ─── CALLBACKS ────────────────────────────────────────────
+bot.on("callback_query", async (query) => {
   const chatId = String(query.message.chat.id);
-  const data = loadData();
   const cb = query.data;
   bot.answerCallbackQuery(query.id);
 
-  // ── Inscription : Genre ──
+  // Inscription genre
   if (cb.startsWith("genre_")) {
     const genre = cb.split("_")[1];
-    if (!data.pending[chatId]) data.pending[chatId] = {};
-    data.pending[chatId].genre = genre;
-    data.pending[chatId].step = "pays";
-    saveData(data);
-    bot.sendMessage(chatId, `🌍 *Dans quel pays vis-tu ?*\n\n_(Tape simplement le nom de ton pays)_`, { parse_mode: "Markdown" });
+    await setPending(chatId, { step: "pays", genre });
+    bot.sendMessage(chatId, `🌍 *Dans quel pays vis-tu ?*\n_(Tape simplement le nom de ton pays)_`, { parse_mode: "Markdown" });
     return;
   }
 
-  // ── Inscription : Confirmation règles ──
+  // Acceptation règles
   if (cb === "rules_ok") {
-    const pending = data.pending[chatId];
+    const pending = await getPending(chatId);
     if (!pending || pending.step !== "rules") return;
     const username = query.from.username || null;
-    const pseudo = assignPseudo(pending.genre, username, data);
-    data.registered[chatId] = { chatId, pseudo, realUsername: username, genre: pending.genre, pays: pending.pays, pairedWith: null, confirmed: true };
-    delete data.pending[chatId];
-    saveData(data);
-    data.admins.forEach(adminId => {
-      bot.sendMessage(adminId, `📥 *Nouvel inscrit !*\nPseudo : *${pseudo}*\nGenre : ${pending.genre}\nPays : ${pending.pays}\nTotal : ${Object.keys(data.registered).length}`, { parse_mode: "Markdown" });
-    });
+    const pseudo = await assignPseudo(pending.genre, username);
+    await Participant.create({ chatId, pseudo, realUsername: username, genre: pending.genre, pays: pending.pays, confirmed: true });
+    await clearPending(chatId);
+    const total = await Participant.countDocuments();
+    await notifyAdmins(`📥 *Nouvel inscrit !*\nPseudo : *${pseudo}* | Genre : ${pending.genre} | Pays : ${pending.pays}\nTotal : ${total}`, { parse_mode: "Markdown" });
     bot.sendMessage(chatId,
-      `✅ *Inscription confirmée !*\n\n🎭 Ton pseudo anonyme est : *${pseudo}*\n\nTon vrai nom sera révélé uniquement à la fin du jeu. 🎉\n\n📅 Chaque semaine, tu recevras un *thème* et des *défis* pour guider tes échanges avec ton ami invisible.\n\n⏳ Patiente le temps que le tirage soit effectué. Tu seras notifié(e) dès que ton ami invisible t'est attribué. 🎁`,
-      { parse_mode: "Markdown" }
+      `✅ *Inscription confirmée !*\n\n🎭 Ton pseudo anonyme est : *${pseudo}*\n\nTon vrai nom sera révélé uniquement à la fin du jeu. 🎉\n\n📅 Chaque semaine tu recevras un *thème* et des *défis*.\n\n⏳ Patiente le temps que le tirage soit effectué. 🎁`,
+      { parse_mode: "Markdown", reply_markup: participantKeyboard }
     );
     return;
   }
 
   if (cb === "rules_refuse") {
-    delete data.pending[chatId];
-    saveData(data);
+    await clearPending(chatId);
     bot.sendMessage(chatId, "Tu peux revenir quand tu veux en tapant /start. 🙂");
     return;
   }
 
-  // ── Validation défi par second admin ──
+  // Validation défi
   if (cb.startsWith("challenge_approve_")) {
-    const idx = parseInt(cb.split("_")[2]);
-    const challenge = data.pendingChallenges[idx];
-    if (!challenge) return;
-    if (String(chatId) === String(challenge.submittedBy)) {
-      bot.sendMessage(chatId, "❌ Tu ne peux pas approuver ton propre défi. Un autre admin doit valider.");
+    if (!await isAdmin(chatId)) return;
+    const challengeId = cb.split("_")[2];
+    const challenge = await Challenge.findById(challengeId);
+    if (!challenge) { bot.sendMessage(chatId, "❌ Ce défi n'existe plus."); return; }
+    if (String(challenge.submittedBy) === String(chatId)) {
+      bot.sendMessage(chatId, "⚠️ Tu ne peux pas approuver ton propre défi.");
       return;
     }
-    const registered = Object.values(data.registered);
-    registered.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge.text}`, { parse_mode: "Markdown" }));
-    data.customChallenges.push({ text: challenge.text, date: new Date().toISOString() });
-    data.pendingChallenges.splice(idx, 1);
-    saveData(data);
-    bot.sendMessage(chatId, `✅ Défi approuvé et envoyé à ${registered.length} participant(s).`);
-    bot.sendMessage(challenge.submittedBy, `✅ Ton défi a été approuvé et diffusé par un autre admin.`);
+    const participants = await Participant.find();
+    for (const p of participants) {
+      bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge.text}`, { parse_mode: "Markdown" });
+    }
+    challenge.approved = true;
+    await challenge.save();
+    bot.sendMessage(chatId, `✅ Défi approuvé et envoyé à ${participants.length} participant(s).`);
+    bot.sendMessage(challenge.submittedBy, `✅ Ton défi a été approuvé et envoyé à tous !`);
     return;
   }
 
   if (cb.startsWith("challenge_reject_")) {
-    const idx = parseInt(cb.split("_")[2]);
-    const challenge = data.pendingChallenges[idx];
+    if (!await isAdmin(chatId)) return;
+    const challengeId = cb.split("_")[2];
+    const challenge = await Challenge.findById(challengeId);
     if (!challenge) return;
-    data.pendingChallenges.splice(idx, 1);
-    saveData(data);
-    bot.sendMessage(chatId, `❌ Défi rejeté.`);
-    bot.sendMessage(challenge.submittedBy, `❌ Ton défi a été rejeté par un autre admin.`);
+    await Challenge.deleteOne({ _id: challengeId });
+    bot.sendMessage(chatId, "❌ Défi refusé.");
+    bot.sendMessage(challenge.submittedBy, `❌ Ton défi a été refusé.`);
     return;
   }
 
-  // ── Toutes les actions admin suivantes ──
-  if (!isAdmin(chatId)) return;
+  // Zone admin
+  if (!await isAdmin(chatId)) return;
 
-  if (cb === "admin_list") { sendAdminList(chatId); return; }
-  if (cb === "admin_pairs") { sendAdminPairs(chatId); return; }
-  if (cb === "admin_autopair") { autoCreatePairs(chatId); return; }
-  if (cb === "admin_reports") { sendAdminReports(chatId); return; }
-  if (cb === "admin_back") { sendAdminDashboard(chatId); return; }
+  if (cb === "admin_list") { await sendAdminList(chatId); return; }
+  if (cb === "admin_pairs") { await sendAdminPairs(chatId); return; }
+  if (cb === "admin_autopair") { await autoCreatePairs(chatId); return; }
+  if (cb === "admin_reports") { await sendAdminReports(chatId); return; }
+  if (cb === "admin_back") { await sendAdminDashboard(chatId); return; }
 
   if (cb === "admin_challenge") {
-    data.pending[chatId] = { step: "admin_challenge" };
-    saveData(data);
-    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi :*\n\n_(Il sera soumis à validation par un autre admin avant diffusion)_", { parse_mode: "Markdown" });
+    await setPending(chatId, { step: "admin_challenge" });
+    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi :*\n\n_(Il sera soumis à validation par un autre admin)_", { parse_mode: "Markdown" });
     return;
   }
 
   if (cb === "admin_theme_menu") {
-    const themes = data.themes;
-    bot.sendMessage(chatId, "📅 *Gestion des thèmes*\n\nChoisis une action :", {
+    const themes = await getConfig("themes", DEFAULT_THEMES);
+    bot.sendMessage(chatId, "📅 *Gérer les thèmes*\n\nEnvoyer ou modifier :", {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "📤 Envoyer thème S1", callback_data: "admin_theme_send_1" }, { text: "📤 Envoyer thème S2", callback_data: "admin_theme_send_2" }],
-          [{ text: "📤 Envoyer thème S3", callback_data: "admin_theme_send_3" }, { text: "📤 Envoyer thème S4", callback_data: "admin_theme_send_4" }],
-          [{ text: "✏️ Modifier thème S1", callback_data: "admin_theme_edit_1" }, { text: "✏️ Modifier thème S2", callback_data: "admin_theme_edit_2" }],
-          [{ text: "✏️ Modifier thème S3", callback_data: "admin_theme_edit_3" }, { text: "✏️ Modifier thème S4", callback_data: "admin_theme_edit_4" }],
-          [{ text: "📝 Éditer thème semaine prochaine", callback_data: "admin_theme_next" }],
+          [{ text: "📤 S1", callback_data: "admin_theme_send_1" }, { text: "✏️ S1", callback_data: "admin_theme_edit_1" }],
+          [{ text: "📤 S2", callback_data: "admin_theme_send_2" }, { text: "✏️ S2", callback_data: "admin_theme_edit_2" }],
+          [{ text: "📤 S3", callback_data: "admin_theme_send_3" }, { text: "✏️ S3", callback_data: "admin_theme_edit_3" }],
+          [{ text: "📤 S4", callback_data: "admin_theme_send_4" }, { text: "✏️ S4", callback_data: "admin_theme_edit_4" }],
+          [{ text: "📝 Thème semaine prochaine", callback_data: "admin_theme_next" }],
           [{ text: "⬅️ Retour", callback_data: "admin_back" }],
         ],
       },
@@ -283,65 +379,63 @@ bot.on("callback_query", (query) => {
   }
 
   if (cb.startsWith("admin_theme_send_")) {
-    const week = cb.split("_")[3];
-    sendThemeToAll(chatId, week);
+    await sendThemeToAll(chatId, cb.split("_")[3]);
     return;
   }
 
   if (cb.startsWith("admin_theme_edit_")) {
     const week = cb.split("_")[3];
-    data.pending[chatId] = { step: "admin_theme_edit", week };
-    saveData(data);
-    bot.sendMessage(chatId,
-      `✏️ *Modifier le thème de la semaine ${week}*\n\nThème actuel :\n\n${data.themes[week]}\n\n---\nEnvoie le nouveau texte du thème :`,
-      { parse_mode: "Markdown" }
-    );
+    const themes = await getConfig("themes", DEFAULT_THEMES);
+    await setPending(chatId, { step: "admin_theme_edit", week });
+    bot.sendMessage(chatId, `✏️ *Modifier thème Semaine ${week}*\n\nActuel :\n${themes[week]}\n\n_Envoie le nouveau texte :_`, { parse_mode: "Markdown" });
     return;
   }
 
   if (cb === "admin_theme_next") {
-    data.pending[chatId] = { step: "admin_theme_next" };
-    saveData(data);
-    const current = data.nextWeekTheme || "_Aucun thème défini pour la semaine prochaine_";
-    bot.sendMessage(chatId,
-      `📝 *Thème semaine prochaine*\n\nActuel : ${current}\n\n---\nEnvoie le nouveau thème pour la semaine prochaine :`,
-      { parse_mode: "Markdown" }
-    );
+    const next = await getConfig("nextWeekTheme", null);
+    await setPending(chatId, { step: "admin_theme_next" });
+    bot.sendMessage(chatId, `📝 *Thème semaine prochaine*\n\nActuel : ${next || "_Non défini_"}\n\n_Envoie le nouveau thème :_`, { parse_mode: "Markdown" });
     return;
   }
 
   if (cb === "admin_reveal") {
-    bot.sendMessage(chatId, "⚠️ *Confirmes-tu la révélation finale ?*\n\nCette action est irréversible.", {
+    bot.sendMessage(chatId, "⚠️ *Confirmes-tu la révélation finale ?*\n\nIrréversible.", {
       parse_mode: "Markdown",
       reply_markup: { inline_keyboard: [[{ text: "✅ Confirmer", callback_data: "admin_reveal_confirm" }, { text: "❌ Annuler", callback_data: "admin_back" }]] },
     });
     return;
   }
-  if (cb === "admin_reveal_confirm") { revealAll(chatId); return; }
+
+  if (cb === "admin_reveal_confirm") { await revealAll(chatId); return; }
 
   if (cb === "admin_start_game") {
-    data.gameStartDate = new Date().toISOString();
-    data.currentWeek = 1;
-    data.reminderActive = true;
-    saveData(data);
-    bot.sendMessage(chatId, "✅ *Jeu démarré !*\n\nLa semaine 1 commence. Les rappels hebdomadaires sont actifs.", { parse_mode: "Markdown" });
-    sendAdminDashboard(chatId);
+    await setConfig("gameStartDate", new Date().toISOString());
+    await setConfig("currentWeek", 1);
+    bot.sendMessage(chatId, `✅ *Jeu lancé !* Semaine 1 démarrée.\n\nLes rappels quotidiens sont actifs.`, { parse_mode: "Markdown" });
+    await sendAdminDashboard(chatId);
     return;
   }
+
+  if (cb === "admin_gifts") { await sendAdminGifts(chatId); return; }
 });
 
 // ─── MESSAGES TEXTE ───────────────────────────────────────
-bot.on("message", (msg) => {
+bot.on("message", async (msg) => {
   const chatId = String(msg.chat.id);
-  if (!msg.text || msg.text.startsWith("/")) return;
-  const data = loadData();
-  const pending = data.pending[chatId];
+  if (msg.text && msg.text.startsWith("/")) return;
 
-  // Étape : pays
-  if (pending && pending.step === "pays") {
-    pending.pays = msg.text.trim();
-    pending.step = "rules";
-    saveData(data);
+  const pending = await getPending(chatId);
+
+  // ── Douxeur actions texte ──
+  if (await isDouxeur(chatId)) {
+    await handleDouxeurMessage(chatId, msg, pending);
+    return;
+  }
+
+  // ── Inscription : pays ──
+  if (pending && pending.step === "pays" && msg.text) {
+    const p = { ...pending, pays: msg.text.trim(), step: "rules" };
+    await setPending(chatId, p);
     bot.sendMessage(chatId, `${REGLES}\n\n---\n\n*Tu as bien lu et compris les règles ?*`, {
       parse_mode: "Markdown",
       reply_markup: { inline_keyboard: [[{ text: "✅ J'ai compris et j'accepte", callback_data: "rules_ok" }, { text: "❌ Je refuse", callback_data: "rules_refuse" }]] },
@@ -349,267 +443,491 @@ bot.on("message", (msg) => {
     return;
   }
 
-  // Admin : saisie défi
-  if (pending && pending.step === "admin_challenge" && isAdmin(chatId)) {
-    const challenge = msg.text.trim();
-    const idx = data.pendingChallenges.length;
-    data.pendingChallenges.push({ text: challenge, submittedBy: chatId, date: new Date().toISOString() });
-    delete data.pending[chatId];
-    saveData(data);
-    bot.sendMessage(chatId, `✅ Défi soumis. En attente de validation par un autre admin.`);
-    // Notifier les autres admins
-    data.admins.filter(a => a !== chatId).forEach(adminId => {
-      bot.sendMessage(adminId,
-        `🎯 *Nouveau défi à valider*\n\n${challenge}\n\n_Soumis par un admin_`,
-        {
+  // ── Admin : défi ──
+  if (pending && pending.step === "admin_challenge" && await isAdmin(chatId) && msg.text) {
+    const text = msg.text.trim();
+    const admins = await getAdmins();
+    const challenge = await Challenge.create({ text, submittedBy: chatId });
+    await clearPending(chatId);
+    bot.sendMessage(chatId, `✅ Défi soumis ! En attente de validation par un autre admin.`);
+    const otherAdmins = admins.filter(a => a !== chatId);
+    if (otherAdmins.length === 0) {
+      const participants = await Participant.find();
+      for (const p of participants) bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${text}`, { parse_mode: "Markdown" });
+      challenge.approved = true;
+      await challenge.save();
+      bot.sendMessage(chatId, `✅ Tu es le seul admin — défi envoyé directement à ${participants.length} participant(s).`);
+    } else {
+      for (const adminId of otherAdmins) {
+        bot.sendMessage(adminId, `🎯 *Nouveau défi à valider*\n\n"${text}"`, {
           parse_mode: "Markdown",
-          reply_markup: { inline_keyboard: [[{ text: "✅ Approuver et envoyer", callback_data: `challenge_approve_${idx}` }, { text: "❌ Rejeter", callback_data: `challenge_reject_${idx}` }]] }
-        }
-      );
-    });
-    // Si admin seul, approuver directement
-    if (data.admins.length === 1) {
-      const registered = Object.values(data.registered);
-      registered.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge}`, { parse_mode: "Markdown" }));
-      data.customChallenges.push({ text: challenge, date: new Date().toISOString() });
-      data.pendingChallenges.pop();
-      saveData(data);
-      bot.sendMessage(chatId, `✅ Tu es le seul admin — défi envoyé directement à ${registered.length} participant(s).`);
+          reply_markup: { inline_keyboard: [[{ text: "✅ Approuver", callback_data: `challenge_approve_${challenge._id}` }, { text: "❌ Refuser", callback_data: `challenge_reject_${challenge._id}` }]] },
+        });
+      }
     }
-    sendAdminDashboard(chatId);
+    await sendAdminDashboard(chatId);
     return;
   }
 
-  // Admin : modifier thème existant
-  if (pending && pending.step === "admin_theme_edit" && isAdmin(chatId)) {
-    const week = pending.week;
-    data.themes[week] = msg.text.trim();
-    delete data.pending[chatId];
-    saveData(data);
-    bot.sendMessage(chatId, `✅ Thème de la semaine ${week} mis à jour !`);
-    sendAdminDashboard(chatId);
+  // ── Admin : modifier thème ──
+  if (pending && pending.step === "admin_theme_edit" && await isAdmin(chatId) && msg.text) {
+    const themes = await getConfig("themes", DEFAULT_THEMES);
+    themes[pending.week] = msg.text.trim();
+    await setConfig("themes", themes);
+    await clearPending(chatId);
+    bot.sendMessage(chatId, `✅ Thème S${pending.week} mis à jour !`);
+    await sendAdminDashboard(chatId);
     return;
   }
 
-  // Admin : thème semaine prochaine
-  if (pending && pending.step === "admin_theme_next" && isAdmin(chatId)) {
-    data.nextWeekTheme = msg.text.trim();
-    data.reminderActive = false; // rappels stoppés
-    delete data.pending[chatId];
-    saveData(data);
-    bot.sendMessage(chatId, `✅ Thème de la semaine prochaine enregistré ! Les rappels sont suspendus jusqu'à la semaine suivante. 🎉`);
-    sendAdminDashboard(chatId);
+  // ── Admin : thème semaine prochaine ──
+  if (pending && pending.step === "admin_theme_next" && await isAdmin(chatId) && msg.text) {
+    await setConfig("nextWeekTheme", msg.text.trim());
+    await clearPending(chatId);
+    bot.sendMessage(chatId, `✅ Thème semaine prochaine enregistré !`);
+    await sendAdminDashboard(chatId);
     return;
   }
 
-  // Relais messages entre binômes
-  const participant = data.registered[chatId];
-  if (!participant) { bot.sendMessage(chatId, "👉 Tape /start pour t'inscrire au jeu."); return; }
-  if (!participant.pairedWith) { bot.sendMessage(chatId, "⏳ Le tirage n'a pas encore eu lieu. Patiente... 🎯"); return; }
-  bot.sendMessage(participant.pairedWith, `💌 *Message de ton ami invisible :*\n\n${msg.text}`, { parse_mode: "Markdown" });
+  // ── Cadeau : description ──
+  if (pending && pending.step === "cadeau_description" && msg.text) {
+    await setPending(chatId, { ...pending, step: "cadeau_photo", description: msg.text.trim() });
+    bot.sendMessage(chatId, `📸 *Envoie maintenant une photo de ton cadeau*\n\n_(Cette photo sera transmise à Douxeur pour vérification à la réception)_\n\nOu tape /skip pour ignorer la photo.`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  // ── Cadeau : skip photo ──
+  if (msg.text === "/skip" && pending && pending.step === "cadeau_photo") {
+    await finalizeCadeau(chatId, pending, null);
+    return;
+  }
+
+  // ── Keyboard buttons admin ──
+  if (await isAdmin(chatId) && msg.text) {
+    await handleAdminKeyboard(chatId, msg.text);
+    return;
+  }
+
+  // ── Relais messages ──
+  const participant = await Participant.findOne({ chatId });
+  if (!participant) { bot.sendMessage(chatId, "👉 Tape /start pour t'inscrire."); return; }
+  if (!participant.pairedWith) { bot.sendMessage(chatId, "⏳ Le tirage n'a pas encore eu lieu. 🎯"); return; }
+
+  if (msg.text) {
+    bot.sendMessage(participant.pairedWith, `💌 *Message de ton ami invisible :*\n\n${msg.text}`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
+  }
+});
+
+// ─── HANDLER ADMIN KEYBOARD ───────────────────────────────
+async function handleAdminKeyboard(chatId, text) {
+  if (text === "👥 Inscrits") { await sendAdminList(chatId); return; }
+  if (text === "👫 Binômes") { await sendAdminPairs(chatId); return; }
+  if (text === "📅 Thèmes") {
+    bot.emit("callback_query", { message: { chat: { id: chatId } }, data: "admin_theme_menu", id: "0", from: { username: null } });
+    return;
+  }
+  if (text === "🎯 Défi") {
+    await setPending(chatId, { step: "admin_challenge" });
+    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi :*", { parse_mode: "Markdown" });
+    return;
+  }
+  if (text === "🚨 Signalements") { await sendAdminReports(chatId); return; }
+  if (text === "🎉 Révélation") {
+    bot.sendMessage(chatId, "⚠️ *Confirmes-tu la révélation finale ?*", {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: [[{ text: "✅ Confirmer", callback_data: "admin_reveal_confirm" }, { text: "❌ Annuler", callback_data: "admin_back" }]] },
+    });
+    return;
+  }
+  if (text === "🎮 Lancer jeu") {
+    await setConfig("gameStartDate", new Date().toISOString());
+    await setConfig("currentWeek", 1);
+    bot.sendMessage(chatId, `✅ *Jeu lancé !*`, { parse_mode: "Markdown", reply_markup: adminKeyboard });
+    return;
+  }
+}
+
+// ─── HANDLER DOUXEUR ──────────────────────────────────────
+async function handleDouxeurMessage(chatId, msg, pending) {
+  const text = msg.text || "";
+
+  if (text === "📦 Cadeaux en attente") { await sendDouxeurPendingGifts(chatId); return; }
+
+  if (text === "✅ Cadeau reçu" || (pending && pending.step === "douxeur_confirm_received")) {
+    if (text === "✅ Cadeau reçu") {
+      await setPending(chatId, { step: "douxeur_confirm_received" });
+      bot.sendMessage(chatId, "📦 *Confirmer réception*\n\nEntre le code du cadeau reçu :", { parse_mode: "Markdown" });
+      return;
+    }
+    if (pending && pending.step === "douxeur_confirm_received" && msg.text) {
+      await confirmGiftReceived(chatId, msg.text.trim().toUpperCase());
+      return;
+    }
+  }
+
+  if (text === "🎁 Cadeau remis" || (pending && pending.step === "douxeur_confirm_delivered")) {
+    if (text === "🎁 Cadeau remis") {
+      await setPending(chatId, { step: "douxeur_confirm_delivered" });
+      bot.sendMessage(chatId, "🎁 *Confirmer remise*\n\nEntre le code du cadeau remis :", { parse_mode: "Markdown" });
+      return;
+    }
+    if (pending && pending.step === "douxeur_confirm_delivered" && msg.text) {
+      await confirmGiftDelivered(chatId, msg.text.trim().toUpperCase());
+      return;
+    }
+  }
+
+  if (text === "⚠️ Problème cadeau" || (pending && pending.step === "douxeur_problem_code")) {
+    if (text === "⚠️ Problème cadeau") {
+      await setPending(chatId, { step: "douxeur_problem_code" });
+      bot.sendMessage(chatId, "⚠️ *Signaler un problème*\n\nEntre le code du cadeau concerné :", { parse_mode: "Markdown" });
+      return;
+    }
+    if (pending && pending.step === "douxeur_problem_code" && msg.text) {
+      await setPending(chatId, { step: "douxeur_problem_message", code: msg.text.trim().toUpperCase() });
+      bot.sendMessage(chatId, "📝 Décris le problème :");
+      return;
+    }
+    if (pending && pending.step === "douxeur_problem_message" && msg.text) {
+      await reportGiftProblem(chatId, pending.code, msg.text.trim());
+      return;
+    }
+  }
+
+  await sendDouxeurDashboard(chatId);
+}
+
+// ─── PHOTOS ───────────────────────────────────────────────
+bot.on("photo", async (msg) => {
+  const chatId = String(msg.chat.id);
+  const pending = await getPending(chatId);
+
+  // Photo cadeau
+  if (pending && pending.step === "cadeau_photo") {
+    const fileId = msg.photo[msg.photo.length - 1].file_id;
+    await finalizeCadeau(chatId, pending, fileId);
+    return;
+  }
+
+  // Relais photo
+  const participant = await Participant.findOne({ chatId });
+  if (!participant || !participant.pairedWith) return;
+  bot.sendPhoto(participant.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: "📸 *Photo de ton ami invisible* 🤫", parse_mode: "Markdown" });
   bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
 });
 
+async function finalizeCadeau(chatId, pending, photoFileId) {
+  const participant = await Participant.findOne({ chatId });
+  if (!participant || !participant.pairedWith) return;
+
+  const code = generateGiftCode();
+  const gift = await Gift.create({
+    code,
+    fromId: chatId,
+    toId: participant.pairedWith,
+    description: pending.description,
+    photoFileId,
+    status: "pending",
+  });
+
+  await clearPending(chatId);
+
+  // Notifier Douxeur
+  const douxeurId = await getConfig("douxeurId", null);
+  if (douxeurId) {
+    const douxeurMsg = `📦 *Nouveau cadeau en route !*\n\n🔑 Code : \`${code}\`\n📝 Description : ${pending.description}`;
+    if (photoFileId) {
+      bot.sendPhoto(douxeurId, photoFileId, { caption: douxeurMsg, parse_mode: "Markdown" });
+    } else {
+      bot.sendMessage(douxeurId, douxeurMsg, { parse_mode: "Markdown" });
+    }
+  }
+
+  // Notifier admins
+  await notifyAdmins(`📦 *Cadeau en route*\n\n🔑 Code : \`${code}\`\n📝 ${pending.description}`, { parse_mode: "Markdown" });
+
+  // Notifier le destinataire
+  const toParticipant = await Participant.findOne({ chatId: participant.pairedWith });
+  const boutique = await getConfig("boutiqueAddress", "la boutique Douxeur");
+  bot.sendMessage(participant.pairedWith,
+    `🎁 *Surprise ! Un cadeau arrive pour toi !*\n\nTon ami invisible t'envoie quelque chose. 🤫\n\nRends-toi *demain* à ${boutique} et donne ce code :\n\n🔑 \`${code}\`\n\n_(Garde ce code précieusement — tu en auras besoin pour récupérer ton cadeau)_`,
+    { parse_mode: "Markdown" }
+  );
+
+  bot.sendMessage(chatId,
+    `✅ *Cadeau enregistré !*\n\n🔑 Code : \`${code}\`\n\nDouxeur a été notifiée. Ton ami invisible recevra son cadeau demain. 🎁`,
+    { parse_mode: "Markdown" }
+  );
+}
+
+// ─── FONCTIONS CADEAU DOUXEUR ─────────────────────────────
+async function confirmGiftReceived(chatId, code) {
+  const gift = await Gift.findOne({ code });
+  if (!gift) { bot.sendMessage(chatId, `❌ Code introuvable : ${code}`); return; }
+  if (gift.status !== "pending") { bot.sendMessage(chatId, `⚠️ Ce cadeau est déjà en statut : ${gift.status}`); return; }
+  gift.status = "received";
+  await gift.save();
+  await clearPending(chatId);
+  bot.sendMessage(chatId, `✅ Cadeau *${code}* marqué comme reçu en boutique.`, { parse_mode: "Markdown", reply_markup: douxeurKeyboard });
+  bot.sendMessage(gift.toId, `✅ *Ton cadeau est arrivé chez Douxeur !*\n\nTu peux passer le récupérer. N'oublie pas ton code : \`${code}\``, { parse_mode: "Markdown" });
+}
+
+async function confirmGiftDelivered(chatId, code) {
+  const gift = await Gift.findOne({ code });
+  if (!gift) { bot.sendMessage(chatId, `❌ Code introuvable : ${code}`); return; }
+  if (gift.status === "delivered") { bot.sendMessage(chatId, `⚠️ Ce cadeau a déjà été remis.`); return; }
+  gift.status = "delivered";
+  await gift.save();
+  await clearPending(chatId);
+  bot.sendMessage(chatId, `✅ Cadeau *${code}* marqué comme remis.`, { parse_mode: "Markdown", reply_markup: douxeurKeyboard });
+  bot.sendMessage(gift.fromId, `🎉 *Bonne nouvelle !*\n\nTon cadeau a été remis à ton ami invisible. 🎁\n\nOn espère qu'il/elle va adorer !`, { parse_mode: "Markdown" });
+}
+
+async function reportGiftProblem(chatId, code, message) {
+  const gift = await Gift.findOne({ code });
+  if (!gift) { bot.sendMessage(chatId, `❌ Code introuvable : ${code}`); await clearPending(chatId); return; }
+  gift.status = "problem";
+  await gift.save();
+  await clearPending(chatId);
+  bot.sendMessage(chatId, `✅ Problème signalé pour le cadeau *${code}*.`, { parse_mode: "Markdown", reply_markup: douxeurKeyboard });
+  bot.sendMessage(gift.fromId, `⚠️ *Problème avec ton cadeau*\n\nDouxeur a signalé un problème concernant ton cadeau :\n\n_"${message}"_\n\nContacte l'organisateur pour plus d'informations.`, { parse_mode: "Markdown" });
+  await notifyAdmins(`⚠️ *Problème cadeau*\n\nCode : \`${code}\`\nMessage : ${message}`, { parse_mode: "Markdown" });
+}
+
 // ─── RELAIS MEDIA ─────────────────────────────────────────
-function relayMedia(msg, type) {
+async function relayMedia(msg, type) {
   const chatId = String(msg.chat.id);
-  const data = loadData();
-  const p = data.registered[chatId];
+  const p = await Participant.findOne({ chatId });
   if (!p || !p.pairedWith) return;
   try {
-    if (type === "photo") bot.sendPhoto(p.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: "📸 *Photo de ton ami invisible* 🤫", parse_mode: "Markdown" });
-    else if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: "🎙️ *Vocal de ton ami invisible* 🤫", parse_mode: "Markdown" });
+    if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: "🎙️ *Vocal de ton ami invisible* 🤫", parse_mode: "Markdown" });
     else if (type === "sticker") bot.sendSticker(p.pairedWith, msg.sticker.file_id);
     else if (type === "video") bot.sendVideo(p.pairedWith, msg.video.file_id, { caption: "🎥 *Vidéo de ton ami invisible* 🤫", parse_mode: "Markdown" });
     bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
-  } catch (e) { bot.sendMessage(chatId, "⚠️ Erreur lors de l'envoi. Réessaie."); }
+  } catch (e) { bot.sendMessage(chatId, "⚠️ Erreur lors de l'envoi."); }
 }
-
-bot.on("photo", (msg) => relayMedia(msg, "photo"));
 bot.on("voice", (msg) => relayMedia(msg, "voice"));
 bot.on("sticker", (msg) => relayMedia(msg, "sticker"));
 bot.on("video", (msg) => relayMedia(msg, "video"));
 
 // ─── /signal ──────────────────────────────────────────────
-bot.onText(/\/signal (.+)/, (msg, match) => {
+bot.onText(/\/signal (.+)|🚨 Signaler/, async (msg, match) => {
   const chatId = String(msg.chat.id);
-  const data = loadData();
-  if (!data.registered[chatId]) { bot.sendMessage(chatId, "Tu n'es pas inscrit(e) dans le jeu."); return; }
-  const message = match[1].trim();
-  data.reports.push({ message, date: new Date().toISOString() });
-  saveData(data);
-  data.admins.forEach(adminId => bot.sendMessage(adminId, `🚨 *Nouveau signalement*\n\n${message}`, { parse_mode: "Markdown" }));
-  bot.sendMessage(chatId, "✅ Signalement transmis anonymement.");
-});
-
-// ─── /addadmin ────────────────────────────────────────────
-bot.onText(/\/addadmin (\d+)/, (msg, match) => {
-  const chatId = String(msg.chat.id);
-  if (chatId !== String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Réservé à l'admin principal."); return; }
-  const newAdmin = match[1];
-  const data = loadData();
-  if (!data.admins.includes(newAdmin)) {
-    data.admins.push(newAdmin);
-    saveData(data);
-    bot.sendMessage(chatId, `✅ Admin ajouté : ${newAdmin}`);
-    bot.sendMessage(newAdmin, `🎉 Tu as été ajouté(e) comme admin du bot Amis Invisibles !\n\nTape /start pour accéder au dashboard.`);
+  const participant = await Participant.findOne({ chatId });
+  if (!participant) { bot.sendMessage(chatId, "Tu n'es pas inscrit(e)."); return; }
+  if (match && match[1]) {
+    await Report.create({ message: match[1].trim() });
+    await notifyAdmins(`🚨 *Nouveau signalement*\n\n${match[1].trim()}`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "✅ Signalement transmis anonymement.");
   } else {
-    bot.sendMessage(chatId, "Cet ID est déjà admin.");
+    await setPending(chatId, { step: "signal" });
+    bot.sendMessage(chatId, "🚨 *Signaler une infraction*\n\nDécris le problème :", { parse_mode: "Markdown" });
   }
 });
 
-// ─── RAPPELS QUOTIDIENS ───────────────────────────────────
-function checkDailyReminder() {
-  const data = loadData();
-  if (!data.reminderActive || data.nextWeekTheme) return;
-  if (data.currentWeek === 0) return;
+// ─── /addadmin & /removeadmin ─────────────────────────────
+bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
+  const chatId = String(msg.chat.id);
+  if (chatId !== String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Réservé à l'admin principal."); return; }
+  const newAdmin = match[1];
+  const admins = await getAdmins();
+  if (!admins.includes(newAdmin)) {
+    admins.push(newAdmin);
+    await setConfig("admins", admins);
+    bot.sendMessage(chatId, `✅ Admin ajouté : ${newAdmin}`);
+    bot.sendMessage(newAdmin, `🎉 Tu as été ajouté(e) comme admin !\n\nTape /start pour accéder au dashboard.`, { reply_markup: adminKeyboard });
+  } else { bot.sendMessage(chatId, "Cet ID est déjà admin."); }
+});
 
-  const msg = `⏰ *Rappel quotidien*\n\n📅 Le thème de la *semaine prochaine* n'est pas encore défini !\n\nRendez-vous dans le dashboard → Thèmes → Éditer thème semaine prochaine pour l'ajouter dès maintenant et éviter toute surprise. 🎯`;
-  data.admins.forEach(adminId => {
-    bot.sendMessage(adminId, msg, { parse_mode: "Markdown" });
-  });
-}
-
-// Vérification toutes les 24h
-setInterval(checkDailyReminder, 24 * 60 * 60 * 1000);
-
-// ─── /removeadmin ─────────────────────────────────────────
-bot.onText(/\/removeadmin (\d+)/, (msg, match) => {
+bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
   const chatId = String(msg.chat.id);
   if (chatId !== String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Réservé à l'admin principal."); return; }
   const targetId = match[1];
   if (targetId === String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Tu ne peux pas te retirer toi-même."); return; }
-  const data = loadData();
-  if (!data.admins.includes(targetId)) { bot.sendMessage(chatId, "Cet ID n'est pas admin."); return; }
-  data.admins = data.admins.filter(a => a !== targetId);
-  saveData(data);
+  const admins = await getAdmins();
+  if (!admins.includes(targetId)) { bot.sendMessage(chatId, "Cet ID n'est pas admin."); return; }
+  await setConfig("admins", admins.filter(a => a !== targetId));
   bot.sendMessage(chatId, `✅ Admin supprimé : ${targetId}`);
-  try { bot.sendMessage(targetId, `ℹ️ Tu n'es plus admin du bot Amis Invisibles.`); } catch (e) {}
+  try { bot.sendMessage(targetId, `ℹ️ Tu n'es plus admin du bot.`); } catch (e) {}
+});
+
+// ─── /setdouxeur ──────────────────────────────────────────
+bot.onText(/\/setdouxeur (\d+)/, async (msg, match) => {
+  const chatId = String(msg.chat.id);
+  if (chatId !== String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Réservé à l'admin principal."); return; }
+  const douxeurId = match[1];
+  await setConfig("douxeurId", douxeurId);
+  bot.sendMessage(chatId, `✅ Compte Douxeur (Host) configuré : ${douxeurId}`);
+  bot.sendMessage(douxeurId,
+    `🏪 *Bienvenue sur le bot Amis Invisibles — Compte Host Douxeur*\n\nTu as accès aux fonctions de gestion des cadeaux.\n\nUtilise les boutons ci-dessous pour gérer les cadeaux. 🎁`,
+    { parse_mode: "Markdown", reply_markup: douxeurKeyboard }
+  );
+});
+
+// ─── /setboutique ─────────────────────────────────────────
+bot.onText(/\/setboutique (.+)/, async (msg, match) => {
+  const chatId = String(msg.chat.id);
+  if (!await isAdmin(chatId)) return;
+  await setConfig("boutiqueAddress", match[1].trim());
+  bot.sendMessage(chatId, `✅ Adresse boutique enregistrée : ${match[1].trim()}`);
 });
 
 // ─── FONCTIONS ADMIN ──────────────────────────────────────
-function sendAdminDashboard(chatId) {
-  const data = loadData();
-  const total = Object.keys(data.registered).length;
-  const h = Object.values(data.registered).filter(p => p.genre === "H").length;
-  const f = Object.values(data.registered).filter(p => p.genre === "F").length;
-  const paires = Math.floor(Object.keys(data.pairs).length / 2);
-  const nextTheme = data.nextWeekTheme ? "✅ Prêt" : "⚠️ Non défini";
-  const semaine = data.currentWeek > 0 ? `Semaine ${data.currentWeek}` : "Pas démarré";
+async function sendAdminDashboard(chatId) {
+  const total = await Participant.countDocuments();
+  const h = await Participant.countDocuments({ genre: "H" });
+  const f = await Participant.countDocuments({ genre: "F" });
+  const paired = await Participant.countDocuments({ pairedWith: { $ne: null } });
+  const reports = await Report.countDocuments();
+  const pendingChallenges = await Challenge.countDocuments({ approved: false });
+  const nextTheme = await getConfig("nextWeekTheme", null);
+  const gameStart = await getConfig("gameStartDate", null);
+  const currentWeek = await getConfig("currentWeek", 0);
+  const pendingGifts = await Gift.countDocuments({ status: "pending" });
 
   bot.sendMessage(chatId,
     `🎛️ *Dashboard Admin — Amis Invisibles*\n\n` +
     `👥 Inscrits : *${total}* (${h}H / ${f}F)\n` +
-    `👫 Binômes actifs : *${paires}*\n` +
-    `🚨 Signalements : *${data.reports.length}*\n` +
-    `📅 Statut jeu : *${semaine}*\n` +
-    `📝 Thème semaine prochaine : *${nextTheme}*`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "👥 Voir inscrits", callback_data: "admin_list" }, { text: "👫 Gérer binômes", callback_data: "admin_pairs" }],
-          [{ text: "📅 Thèmes", callback_data: "admin_theme_menu" }, { text: "🎯 Envoyer défi", callback_data: "admin_challenge" }],
-          [{ text: "🚨 Signalements", callback_data: "admin_reports" }, { text: "🎉 Révélation finale", callback_data: "admin_reveal" }],
-          [{ text: "▶️ Démarrer le jeu", callback_data: "admin_start_game" }],
-        ],
-      },
-    }
+    `👫 En binôme : *${Math.floor(paired/2)}*\n` +
+    `🎮 Jeu : *${gameStart ? `Semaine ${currentWeek} en cours` : "Non lancé"}*\n` +
+    `📅 Thème S. prochaine : *${nextTheme ? "✅ Défini" : "⚠️ Non défini"}*\n` +
+    `🎁 Cadeaux en cours : *${pendingGifts}*\n` +
+    `🚨 Signalements : *${reports}*\n` +
+    `⏳ Défis en attente : *${pendingChallenges}*`,
+    { parse_mode: "Markdown", reply_markup: adminKeyboard }
   );
 }
 
-function sendAdminList(chatId) {
-  const data = loadData();
-  const list = Object.values(data.registered);
-  if (list.length === 0) { bot.sendMessage(chatId, "Aucun inscrit pour l'instant."); return; }
-  const text = list.map((p, i) => `${i + 1}. *${p.pseudo}* — ${p.genre} — ${p.pays} — ${p.pairedWith ? "✅ binôme" : "⏳ sans binôme"}`).join("\n");
-  bot.sendMessage(chatId, `📋 *Participants (${list.length}) :*\n\n${text}`, {
-    parse_mode: "Markdown",
-    reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] }
-  });
+async function sendAdminList(chatId) {
+  const list = await Participant.find();
+  if (list.length === 0) { bot.sendMessage(chatId, "Aucun inscrit.", { reply_markup: adminKeyboard }); return; }
+  const text = list.map((p, i) => `${i+1}. *${p.pseudo}* — ${p.genre} — ${p.pays} — ${p.pairedWith ? "✅" : "⏳"}`).join("\n");
+  bot.sendMessage(chatId, `📋 *Participants (${list.length}) :*\n\n${text}`, { parse_mode: "Markdown", reply_markup: adminKeyboard });
 }
 
-function sendAdminPairs(chatId) {
-  const data = loadData();
-  const unpaired = Object.values(data.registered).filter(p => !p.pairedWith);
+async function sendAdminPairs(chatId) {
+  const unpaired = await Participant.find({ pairedWith: null });
   const h = unpaired.filter(p => p.genre === "H").length;
   const f = unpaired.filter(p => p.genre === "F").length;
-  const paires = Math.floor(Object.keys(data.pairs).length / 2);
-  let text = `👫 *Gestion des binômes*\n\nSans binôme : *${unpaired.length}* (${h}H / ${f}F)\nBinômes actifs : *${paires}*\n\n`;
-  text += (h > 0 && f > 0) ? `✅ Tirage possible : ${Math.min(h, f)} binôme(s)` : `⚠️ Besoin d'au moins 1H + 1F`;
+  const paired = await Participant.countDocuments({ pairedWith: { $ne: null } });
+  let text = `👫 *Gestion des binômes*\n\nSans binôme : *${unpaired.length}* (${h}H / ${f}F)\nEn binôme : *${Math.floor(paired/2)}*\n\n`;
+  text += (h > 0 && f > 0) ? `✅ Tirage possible : ${Math.min(h,f)} binôme(s)` : `⚠️ Besoin d'au moins 1H + 1F sans binôme`;
   bot.sendMessage(chatId, text, {
     parse_mode: "Markdown",
-    reply_markup: { inline_keyboard: [[{ text: "🎲 Lancer le tirage automatique", callback_data: "admin_autopair" }], [{ text: "⬅️ Retour", callback_data: "admin_back" }]] },
+    reply_markup: {
+      inline_keyboard: [[{ text: "🎲 Tirage automatique", callback_data: "admin_autopair" }], [{ text: "⬅️ Retour", callback_data: "admin_back" }]],
+    },
   });
 }
 
-function autoCreatePairs(chatId) {
-  const data = loadData();
-  const hommes = Object.values(data.registered).filter(p => p.genre === "H" && !p.pairedWith);
-  const femmes = Object.values(data.registered).filter(p => p.genre === "F" && !p.pairedWith);
+async function autoCreatePairs(chatId) {
+  const hommes = await Participant.find({ genre: "H", pairedWith: null });
+  const femmes = await Participant.find({ genre: "F", pairedWith: null });
   if (hommes.length === 0 || femmes.length === 0) { bot.sendMessage(chatId, "❌ Pas assez de participants."); return; }
   const shuffle = arr => arr.sort(() => Math.random() - 0.5);
   shuffle(hommes); shuffle(femmes);
   const count = Math.min(hommes.length, femmes.length);
+  const themes = await getConfig("themes", DEFAULT_THEMES);
   for (let i = 0; i < count; i++) {
     const h = hommes[i]; const f = femmes[i];
-    data.registered[h.chatId].pairedWith = f.chatId;
-    data.registered[f.chatId].pairedWith = h.chatId;
-    data.pairs[h.chatId] = f.chatId;
-    data.pairs[f.chatId] = h.chatId;
-    const notif = `🎉 *Le jeu commence !*\n\nTon ami invisible t'attend. Écris-lui directement ici — ton identité restera secrète jusqu'à la révélation. 🤫\n\n${data.themes[1]}`;
-    bot.sendMessage(h.chatId, notif, { parse_mode: "Markdown" });
-    bot.sendMessage(f.chatId, notif, { parse_mode: "Markdown" });
+    await Participant.updateOne({ chatId: h.chatId }, { pairedWith: f.chatId });
+    await Participant.updateOne({ chatId: f.chatId }, { pairedWith: h.chatId });
+    const notif = `🎉 *Le jeu commence !*\n\nTon ami invisible t'attend. Écris-lui directement ici — ton identité restera secrète jusqu'à la révélation. 🤫\n\n${themes[1]}`;
+    bot.sendMessage(h.chatId, notif, { parse_mode: "Markdown", reply_markup: participantKeyboard });
+    bot.sendMessage(f.chatId, notif, { parse_mode: "Markdown", reply_markup: participantKeyboard });
   }
-  saveData(data);
-  bot.sendMessage(chatId, `✅ *${count} binôme(s) créé(s) !* Tous les participants ont été notifiés.`, { parse_mode: "Markdown" });
-  sendAdminDashboard(chatId);
+  bot.sendMessage(chatId, `✅ *${count} binôme(s) créé(s) !*`, { parse_mode: "Markdown", reply_markup: adminKeyboard });
 }
 
-function sendThemeToAll(chatId, week) {
-  const data = loadData();
-  const theme = data.themes[week];
-  if (!theme) return;
-  const participants = Object.values(data.registered);
-  participants.forEach(p => bot.sendMessage(p.chatId, `📅 *Thème de la semaine :*\n\n${theme}`, { parse_mode: "Markdown" }));
-
-  // Si c'est le thème semaine prochaine qu'on envoie, on avance la semaine et on réactive les rappels
-  data.currentWeek = parseInt(week);
-  data.nextWeekTheme = null;
-  data.reminderActive = true;
-  saveData(data);
-
-  bot.sendMessage(chatId, `✅ Thème semaine ${week} envoyé à ${participants.length} participant(s).\n\n⚠️ Rappels activés pour le thème de la semaine prochaine.`);
-  sendAdminDashboard(chatId);
+async function sendThemeToAll(chatId, week) {
+  const themes = await getConfig("themes", DEFAULT_THEMES);
+  const theme = themes[week]; if (!theme) return;
+  const participants = await Participant.find();
+  for (const p of participants) bot.sendMessage(p.chatId, `📅 *Thème de la semaine :*\n\n${theme}`, { parse_mode: "Markdown" });
+  bot.sendMessage(chatId, `✅ Thème S${week} envoyé à ${participants.length} participant(s).`, { reply_markup: adminKeyboard });
 }
 
-function sendAdminReports(chatId) {
-  const data = loadData();
-  if (data.reports.length === 0) { bot.sendMessage(chatId, "Aucun signalement. ✅"); return; }
-  const text = data.reports.map((r, i) => `${i + 1}. ${r.message}\n_${new Date(r.date).toLocaleString("fr-FR")}_`).join("\n\n");
-  bot.sendMessage(chatId, `🚨 *Signalements :*\n\n${text}`, {
-    parse_mode: "Markdown",
-    reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] }
-  });
+async function sendAdminReports(chatId) {
+  const reports = await Report.find().sort({ date: -1 }).limit(20);
+  if (reports.length === 0) { bot.sendMessage(chatId, "Aucun signalement. ✅", { reply_markup: adminKeyboard }); return; }
+  const text = reports.map((r, i) => `${i+1}. ${r.message}\n_${new Date(r.date).toLocaleString("fr-FR")}_`).join("\n\n");
+  bot.sendMessage(chatId, `🚨 *Signalements :*\n\n${text}`, { parse_mode: "Markdown", reply_markup: adminKeyboard });
 }
 
-function revealAll(chatId) {
-  const data = loadData();
+async function sendAdminGifts(chatId) {
+  const gifts = await Gift.find({ status: { $ne: "delivered" } }).sort({ date: -1 });
+  if (gifts.length === 0) { bot.sendMessage(chatId, "Aucun cadeau en cours. ✅"); return; }
+  const text = gifts.map((g, i) => `${i+1}. \`${g.code}\` — ${g.status} — ${g.description.substring(0,30)}`).join("\n");
+  bot.sendMessage(chatId, `🎁 *Cadeaux en cours :*\n\n${text}`, { parse_mode: "Markdown", reply_markup: adminKeyboard });
+}
+
+async function sendDouxeurDashboard(chatId) {
+  const pending = await Gift.countDocuments({ status: "pending" });
+  const received = await Gift.countDocuments({ status: "received" });
+  const delivered = await Gift.countDocuments({ status: "delivered" });
+  const problems = await Gift.countDocuments({ status: "problem" });
+  bot.sendMessage(chatId,
+    `🏪 *Dashboard Douxeur — Host*\n\n` +
+    `📦 En attente de réception : *${pending}*\n` +
+    `✅ Reçus en boutique : *${received}*\n` +
+    `🎁 Remis au destinataire : *${delivered}*\n` +
+    `⚠️ Problèmes : *${problems}*`,
+    { parse_mode: "Markdown", reply_markup: douxeurKeyboard }
+  );
+}
+
+async function sendDouxeurPendingGifts(chatId) {
+  const gifts = await Gift.find({ status: { $in: ["pending", "received"] } }).sort({ date: -1 });
+  if (gifts.length === 0) { bot.sendMessage(chatId, "Aucun cadeau en attente. ✅", { reply_markup: douxeurKeyboard }); return; }
+  const text = gifts.map((g, i) => `${i+1}. 🔑 \`${g.code}\`\n   📝 ${g.description}\n   📌 Statut : ${g.status}`).join("\n\n");
+  bot.sendMessage(chatId, `📦 *Cadeaux en cours :*\n\n${text}`, { parse_mode: "Markdown", reply_markup: douxeurKeyboard });
+}
+
+async function revealAll(chatId) {
+  const participants = await Participant.find({ pairedWith: { $ne: null } });
   const done = new Set(); let count = 0;
-  Object.entries(data.pairs).forEach(([id1, id2]) => {
-    if (done.has(id1) || done.has(id2)) return;
-    done.add(id1); done.add(id2);
-    const p1 = data.registered[id1]; const p2 = data.registered[id2];
-    if (!p1 || !p2) return;
-    const r1 = p2.realUsername ? `@${p2.realUsername}` : p2.pseudo;
-    const r2 = p1.realUsername ? `@${p1.realUsername}` : p1.pseudo;
-    bot.sendMessage(id1, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r1}* ! 🎁\n\nMerci d'avoir joué. On espère que ce mois a été beau. 🖤`, { parse_mode: "Markdown" });
-    bot.sendMessage(id2, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r2}* ! 🎁\n\nMerci d'avoir joué. On espère que ce mois a été beau. 🖤`, { parse_mode: "Markdown" });
+  for (const p of participants) {
+    if (done.has(p.chatId) || done.has(p.pairedWith)) continue;
+    done.add(p.chatId); done.add(p.pairedWith);
+    const partner = await Participant.findOne({ chatId: p.pairedWith });
+    if (!partner) continue;
+    const r1 = partner.realUsername ? `@${partner.realUsername}` : partner.pseudo;
+    const r2 = p.realUsername ? `@${p.realUsername}` : p.pseudo;
+    bot.sendMessage(p.chatId, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r1}* ! 🎁\n\nMerci d'avoir joué. 🖤`, { parse_mode: "Markdown" });
+    bot.sendMessage(p.pairedWith, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r2}* ! 🎁\n\nMerci d'avoir joué. 🖤`, { parse_mode: "Markdown" });
     count++;
-  });
-  data.reminderActive = false;
-  saveData(data);
-  bot.sendMessage(chatId, `✅ Révélation envoyée à ${count} binôme(s). Le jeu est terminé. 🎊`);
+  }
+  bot.sendMessage(chatId, `✅ Révélation envoyée à ${count} binôme(s). Le jeu est terminé. 🎊`, { reply_markup: adminKeyboard });
 }
 
-console.log("🤖 AmiInvisibleBot v3 is running...");
+// ─── RAPPELS QUOTIDIENS ───────────────────────────────────
+async function checkDailyReminder() {
+  const gameStart = await getConfig("gameStartDate", null);
+  if (!gameStart) return;
+  const today = new Date().toDateString();
+  const lastReminder = await getConfig("lastReminderDate", null);
+  if (lastReminder === today) return;
+  const nextTheme = await getConfig("nextWeekTheme", null);
+  if (!nextTheme) {
+    await notifyAdmins(
+      `⏰ *Rappel quotidien*\n\n📅 Le thème de la semaine prochaine n'est pas encore défini !\n\nVa dans Thèmes → "Thème semaine prochaine" pour l'enregistrer. 🎯`,
+      { parse_mode: "Markdown" }
+    );
+    await setConfig("lastReminderDate", today);
+  }
+}
+
+setInterval(checkDailyReminder, 60 * 60 * 1000);
+setTimeout(checkDailyReminder, 5000);
+
+// ─── CONNEXION MONGODB ────────────────────────────────────
+mongoose.connect(MONGODB_URI)
+  .then(() => {
+    console.log("✅ MongoDB connecté");
+    console.log("🤖 AmiInvisibleBot v4 is running...");
+  })
+  .catch(err => {
+    console.error("❌ Erreur MongoDB :", err.message);
+    process.exit(1);
+  });
