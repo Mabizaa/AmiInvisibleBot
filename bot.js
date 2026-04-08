@@ -26,7 +26,7 @@ function loadData() {
       nextWeekTheme: null,
       gameStartDate: null,
       currentWeek: 0,
-      lastReminderDate: null,
+      reminderActive: false,
     };
   }
   const data = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
@@ -42,8 +42,9 @@ function loadData() {
     4: "🎁 *Semaine 4 — Révélation*\n\nPréparez votre cadeau et votre message de révélation. La soirée approche !"
   };
   if (data.nextWeekTheme === undefined) data.nextWeekTheme = null;
-  if (!data.gameStartDate) data.gameStartDate = null;
-  if (!data.currentWeek) data.currentWeek = 0;
+  if (data.gameStartDate === undefined) data.gameStartDate = null;
+  if (data.currentWeek === undefined) data.currentWeek = 0;
+  if (data.reminderActive === undefined) data.reminderActive = false;
   return data;
 }
 
@@ -56,7 +57,7 @@ function isAdmin(chatId) {
   return data.admins.includes(String(chatId));
 }
 
-// ─── PSEUDOS ─────────────────────────────────────────────
+// ─── PSEUDOS ANONYMES ────────────────────────────────────
 const NOMS_MASCULINS = [
   "Lorenzo","Matteo","Leonardo","Marco","Luca","Giovanni","Antonio","Francesco","Alessandro","Gabriele",
   "Carlos","Miguel","Diego","Pablo","Alejandro","Javier","Rafael","Andrés","Sergio","Rodrigo",
@@ -64,6 +65,7 @@ const NOMS_MASCULINS = [
   "Nico","Dante","Emilio","César","Ivan","Adrián","Tomás","Víctor","Hugo","Simone",
   "Davide","Riccardo","Stefano","Claudio","Cristiano","Jorge","Manuel","Pedro","Álvaro","Fernando"
 ];
+
 const NOMS_FEMININS = [
   "Sofia","Isabella","Giulia","Valentina","Chiara","Francesca","Alessia","Martina","Aurora","Giorgia",
   "Camila","Valeria","Lucia","Elena","Daniela","Paola","Andrea","Natalia","Gabriela","Mariana",
@@ -88,7 +90,7 @@ function assignPseudo(genre, username, data) {
   return available[Math.floor(Math.random() * available.length)];
 }
 
-// ─── TEXTES FIXES ─────────────────────────────────────────
+// ─── TEXTES ───────────────────────────────────────────────
 const PRINCIPE = `🎁 *Amis Invisibles — DouXeur 💥✨*
 
 Le principe est simple : pendant *4 semaines*, tu vas prendre soin d'une personne que tu ne connais pas encore — ton ami(e) invisible. Tu lui envoies des messages, des attentions, des cadeaux... sans jamais révéler qui tu es.
@@ -109,35 +111,24 @@ const REGLES = `📋 *Les règles du jeu*
 — Pas de drague ni propositions déplacées
 — Pas de questions pour identifier l'autre
 — Pas de rendez-vous avant la révélation
-— Pas d'inactivité totale (si tu t'inscris, tu joues vraiment)
+— Pas d'inactivité totale
 
 ⚠️ *Sanctions :*
-En cas d'infraction, signale via /signal. Une infraction grave = exclusion du jeu.
+En cas d'infraction, signale via /signal. Une infraction grave = exclusion.
 
 🗓️ *Durée :* 4 semaines
 👫 *Binômes :* toujours 1 homme + 1 femme
 🎭 *Anonymat total* jusqu'à la révélation finale`;
 
 // ─── COMMANDES TELEGRAM (bouton ⊞) ───────────────────────
-bot.setMyCommands([
-  { command: "start", description: "Démarrer / Voir mon statut" },
-  { command: "signal", description: "Signaler une infraction anonymement" },
-  { command: "help", description: "Aide et informations" },
-]);
-
-// ─── /help ────────────────────────────────────────────────
-bot.onText(/\/help/, (msg) => {
-  const chatId = String(msg.chat.id);
-  bot.sendMessage(chatId,
-    `ℹ️ *Aide — Amis Invisibles*\n\n` +
-    `• /start — Démarrer ou voir ton statut\n` +
-    `• /signal [message] — Signaler une infraction anonymement\n` +
-    `• /help — Afficher cette aide\n\n` +
-    `💌 Pour écrire à ton ami invisible, envoie simplement un message ici.\n` +
-    `📸 Tu peux aussi envoyer des photos, vocaux, vidéos et stickers.`,
-    { parse_mode: "Markdown" }
-  );
-});
+function setCommands() {
+  bot.setMyCommands([
+    { command: "start", description: "Démarrer / Voir mon statut" },
+    { command: "signal", description: "Signaler une infraction anonymement" },
+    { command: "help", description: "Aide et informations" },
+  ]);
+}
+setCommands();
 
 // ─── /start ───────────────────────────────────────────────
 bot.onText(/\/start/, (msg) => {
@@ -159,7 +150,7 @@ bot.onText(/\/start/, (msg) => {
   data.pending[chatId] = { step: "genre" };
   saveData(data);
 
-  bot.sendMessage(chatId, `${PRINCIPE}\n\n---\n\n*Prêt(e) à rejoindre l'aventure ?*\n\n*Quel est ton genre ?*`, {
+  bot.sendMessage(chatId, `${PRINCIPE}\n\n---\n\n*Prêt(e) à rejoindre l'aventure ?*\nCommençons ton inscription. 👇\n\n*Quel est ton genre ?*`, {
     parse_mode: "Markdown",
     reply_markup: {
       inline_keyboard: [
@@ -170,25 +161,38 @@ bot.onText(/\/start/, (msg) => {
   });
 });
 
-// ─── CALLBACKS ────────────────────────────────────────────
+// ─── /help ────────────────────────────────────────────────
+bot.onText(/\/help/, (msg) => {
+  const chatId = String(msg.chat.id);
+  bot.sendMessage(chatId,
+    `ℹ️ *Aide — Amis Invisibles*\n\n` +
+    `*/start* — Démarrer le bot ou voir ton statut\n` +
+    `*/signal [message]* — Signaler une infraction anonymement\n` +
+    `*/help* — Afficher cette aide\n\n` +
+    `Pour toute question, contacte l'organisateur du jeu.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ─── CALLBACK QUERIES ─────────────────────────────────────
 bot.on("callback_query", (query) => {
   const chatId = String(query.message.chat.id);
   const data = loadData();
   const cb = query.data;
   bot.answerCallbackQuery(query.id);
 
-  // Inscription : genre
+  // ── Inscription : Genre ──
   if (cb.startsWith("genre_")) {
     const genre = cb.split("_")[1];
     if (!data.pending[chatId]) data.pending[chatId] = {};
     data.pending[chatId].genre = genre;
     data.pending[chatId].step = "pays";
     saveData(data);
-    bot.sendMessage(chatId, `🌍 *Dans quel pays vis-tu ?*\n_(Tape simplement le nom de ton pays)_`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, `🌍 *Dans quel pays vis-tu ?*\n\n_(Tape simplement le nom de ton pays)_`, { parse_mode: "Markdown" });
     return;
   }
 
-  // Inscription : acceptation règles
+  // ── Inscription : Confirmation règles ──
   if (cb === "rules_ok") {
     const pending = data.pending[chatId];
     if (!pending || pending.step !== "rules") return;
@@ -198,10 +202,10 @@ bot.on("callback_query", (query) => {
     delete data.pending[chatId];
     saveData(data);
     data.admins.forEach(adminId => {
-      bot.sendMessage(adminId, `📥 *Nouvel inscrit !*\nPseudo : *${pseudo}* | Genre : ${pending.genre} | Pays : ${pending.pays}\nTotal : ${Object.keys(data.registered).length}`, { parse_mode: "Markdown" });
+      bot.sendMessage(adminId, `📥 *Nouvel inscrit !*\nPseudo : *${pseudo}*\nGenre : ${pending.genre}\nPays : ${pending.pays}\nTotal : ${Object.keys(data.registered).length}`, { parse_mode: "Markdown" });
     });
     bot.sendMessage(chatId,
-      `✅ *Inscription confirmée !*\n\n🎭 Ton pseudo anonyme est : *${pseudo}*\n\nTon vrai nom sera révélé uniquement à la fin du jeu. 🎉\n\n📅 Chaque semaine tu recevras un *thème* et des *défis* pour guider tes échanges.\n\n⏳ Patiente le temps que le tirage soit effectué. Tu seras notifié(e) dès que ton ami invisible t'est attribué. 🎁`,
+      `✅ *Inscription confirmée !*\n\n🎭 Ton pseudo anonyme est : *${pseudo}*\n\nTon vrai nom sera révélé uniquement à la fin du jeu. 🎉\n\n📅 Chaque semaine, tu recevras un *thème* et des *défis* pour guider tes échanges avec ton ami invisible.\n\n⏳ Patiente le temps que le tirage soit effectué. Tu seras notifié(e) dès que ton ami invisible t'est attribué. 🎁`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -214,39 +218,37 @@ bot.on("callback_query", (query) => {
     return;
   }
 
-  // Validation défi par second admin
+  // ── Validation défi par second admin ──
   if (cb.startsWith("challenge_approve_")) {
-    if (!isAdmin(chatId)) return;
     const idx = parseInt(cb.split("_")[2]);
     const challenge = data.pendingChallenges[idx];
-    if (!challenge) { bot.sendMessage(chatId, "❌ Ce défi n'existe plus."); return; }
-    if (String(challenge.submittedBy) === String(chatId)) {
-      bot.sendMessage(chatId, "⚠️ Tu ne peux pas approuver ton propre défi. Un autre admin doit valider.");
+    if (!challenge) return;
+    if (String(chatId) === String(challenge.submittedBy)) {
+      bot.sendMessage(chatId, "❌ Tu ne peux pas approuver ton propre défi. Un autre admin doit valider.");
       return;
     }
-    const participants = Object.values(data.registered);
-    participants.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge.text}`, { parse_mode: "Markdown" }));
+    const registered = Object.values(data.registered);
+    registered.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge.text}`, { parse_mode: "Markdown" }));
     data.customChallenges.push({ text: challenge.text, date: new Date().toISOString() });
     data.pendingChallenges.splice(idx, 1);
     saveData(data);
-    bot.sendMessage(chatId, `✅ Défi approuvé et envoyé à ${participants.length} participant(s).`);
-    bot.sendMessage(challenge.submittedBy, `✅ Ton défi a été approuvé et envoyé à tous les participants !`);
+    bot.sendMessage(chatId, `✅ Défi approuvé et envoyé à ${registered.length} participant(s).`);
+    bot.sendMessage(challenge.submittedBy, `✅ Ton défi a été approuvé et diffusé par un autre admin.`);
     return;
   }
 
   if (cb.startsWith("challenge_reject_")) {
-    if (!isAdmin(chatId)) return;
     const idx = parseInt(cb.split("_")[2]);
     const challenge = data.pendingChallenges[idx];
-    if (!challenge) { bot.sendMessage(chatId, "❌ Ce défi n'existe plus."); return; }
+    if (!challenge) return;
     data.pendingChallenges.splice(idx, 1);
     saveData(data);
-    bot.sendMessage(chatId, "❌ Défi refusé.");
-    bot.sendMessage(challenge.submittedBy, `❌ Ton défi a été refusé par un autre admin.`);
+    bot.sendMessage(chatId, `❌ Défi rejeté.`);
+    bot.sendMessage(challenge.submittedBy, `❌ Ton défi a été rejeté par un autre admin.`);
     return;
   }
 
-  // Zone admin
+  // ── Toutes les actions admin suivantes ──
   if (!isAdmin(chatId)) return;
 
   if (cb === "admin_list") { sendAdminList(chatId); return; }
@@ -258,21 +260,21 @@ bot.on("callback_query", (query) => {
   if (cb === "admin_challenge") {
     data.pending[chatId] = { step: "admin_challenge" };
     saveData(data);
-    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi :*\n\nIl sera soumis à validation par un autre admin avant d'être diffusé.", { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "🎯 *Envoie le texte du défi :*\n\n_(Il sera soumis à validation par un autre admin avant diffusion)_", { parse_mode: "Markdown" });
     return;
   }
 
   if (cb === "admin_theme_menu") {
     const themes = data.themes;
-    bot.sendMessage(chatId, "📅 *Gérer les thèmes*\n\nChoisis un thème à envoyer ou modifier :", {
+    bot.sendMessage(chatId, "📅 *Gestion des thèmes*\n\nChoisis une action :", {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "📤 Envoyer S1", callback_data: "admin_theme_send_1" }, { text: "✏️ Modifier S1", callback_data: "admin_theme_edit_1" }],
-          [{ text: "📤 Envoyer S2", callback_data: "admin_theme_send_2" }, { text: "✏️ Modifier S2", callback_data: "admin_theme_edit_2" }],
-          [{ text: "📤 Envoyer S3", callback_data: "admin_theme_send_3" }, { text: "✏️ Modifier S3", callback_data: "admin_theme_edit_3" }],
-          [{ text: "📤 Envoyer S4", callback_data: "admin_theme_send_4" }, { text: "✏️ Modifier S4", callback_data: "admin_theme_edit_4" }],
-          [{ text: "📝 Définir thème semaine prochaine", callback_data: "admin_theme_next" }],
+          [{ text: "📤 Envoyer thème S1", callback_data: "admin_theme_send_1" }, { text: "📤 Envoyer thème S2", callback_data: "admin_theme_send_2" }],
+          [{ text: "📤 Envoyer thème S3", callback_data: "admin_theme_send_3" }, { text: "📤 Envoyer thème S4", callback_data: "admin_theme_send_4" }],
+          [{ text: "✏️ Modifier thème S1", callback_data: "admin_theme_edit_1" }, { text: "✏️ Modifier thème S2", callback_data: "admin_theme_edit_2" }],
+          [{ text: "✏️ Modifier thème S3", callback_data: "admin_theme_edit_3" }, { text: "✏️ Modifier thème S4", callback_data: "admin_theme_edit_4" }],
+          [{ text: "📝 Éditer thème semaine prochaine", callback_data: "admin_theme_next" }],
           [{ text: "⬅️ Retour", callback_data: "admin_back" }],
         ],
       },
@@ -291,7 +293,7 @@ bot.on("callback_query", (query) => {
     data.pending[chatId] = { step: "admin_theme_edit", week };
     saveData(data);
     bot.sendMessage(chatId,
-      `✏️ *Modifier le thème Semaine ${week}*\n\nThème actuel :\n${data.themes[week]}\n\n_Envoie le nouveau texte du thème :_`,
+      `✏️ *Modifier le thème de la semaine ${week}*\n\nThème actuel :\n\n${data.themes[week]}\n\n---\nEnvoie le nouveau texte du thème :`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -300,9 +302,9 @@ bot.on("callback_query", (query) => {
   if (cb === "admin_theme_next") {
     data.pending[chatId] = { step: "admin_theme_next" };
     saveData(data);
-    const current = data.nextWeekTheme || "_Aucun thème défini pour la semaine prochaine._";
+    const current = data.nextWeekTheme || "_Aucun thème défini pour la semaine prochaine_";
     bot.sendMessage(chatId,
-      `📝 *Thème semaine prochaine*\n\nActuel : ${current}\n\n_Envoie le nouveau thème pour la semaine prochaine :_`,
+      `📝 *Thème semaine prochaine*\n\nActuel : ${current}\n\n---\nEnvoie le nouveau thème pour la semaine prochaine :`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -315,14 +317,14 @@ bot.on("callback_query", (query) => {
     });
     return;
   }
-
   if (cb === "admin_reveal_confirm") { revealAll(chatId); return; }
 
   if (cb === "admin_start_game") {
     data.gameStartDate = new Date().toISOString();
     data.currentWeek = 1;
+    data.reminderActive = true;
     saveData(data);
-    bot.sendMessage(chatId, `✅ *Jeu lancé !* Semaine 1 démarrée le ${new Date().toLocaleDateString("fr-FR")}.\n\nLes rappels hebdomadaires sont maintenant actifs.`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "✅ *Jeu démarré !*\n\nLa semaine 1 commence. Les rappels hebdomadaires sont actifs.", { parse_mode: "Markdown" });
     sendAdminDashboard(chatId);
     return;
   }
@@ -347,40 +349,32 @@ bot.on("message", (msg) => {
     return;
   }
 
-  // Admin : nouveau défi
+  // Admin : saisie défi
   if (pending && pending.step === "admin_challenge" && isAdmin(chatId)) {
-    const text = msg.text.trim();
+    const challenge = msg.text.trim();
     const idx = data.pendingChallenges.length;
-    data.pendingChallenges.push({ text, submittedBy: chatId, date: new Date().toISOString() });
+    data.pendingChallenges.push({ text: challenge, submittedBy: chatId, date: new Date().toISOString() });
     delete data.pending[chatId];
     saveData(data);
-
-    bot.sendMessage(chatId, `✅ Défi soumis ! En attente de validation par un autre admin.`);
-
+    bot.sendMessage(chatId, `✅ Défi soumis. En attente de validation par un autre admin.`);
     // Notifier les autres admins
     data.admins.filter(a => a !== chatId).forEach(adminId => {
       bot.sendMessage(adminId,
-        `🎯 *Nouveau défi à valider*\n\n"${text}"\n\nSoumis par un co-admin. Approuves-tu l'envoi à tous les participants ?`,
+        `🎯 *Nouveau défi à valider*\n\n${challenge}\n\n_Soumis par un admin_`,
         {
           parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "✅ Approuver", callback_data: `challenge_approve_${idx}` },
-              { text: "❌ Refuser", callback_data: `challenge_reject_${idx}` },
-            ]],
-          },
+          reply_markup: { inline_keyboard: [[{ text: "✅ Approuver et envoyer", callback_data: `challenge_approve_${idx}` }, { text: "❌ Rejeter", callback_data: `challenge_reject_${idx}` }]] }
         }
       );
     });
-
-    // Si un seul admin, envoi direct
+    // Si admin seul, approuver directement
     if (data.admins.length === 1) {
-      const participants = Object.values(data.registered);
-      participants.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${text}`, { parse_mode: "Markdown" }));
-      data.customChallenges.push({ text, date: new Date().toISOString() });
+      const registered = Object.values(data.registered);
+      registered.forEach(p => bot.sendMessage(p.chatId, `🎯 *Défi de la semaine !*\n\n${challenge}`, { parse_mode: "Markdown" }));
+      data.customChallenges.push({ text: challenge, date: new Date().toISOString() });
       data.pendingChallenges.pop();
       saveData(data);
-      bot.sendMessage(chatId, `✅ Tu es le seul admin — défi envoyé directement à ${participants.length} participant(s).`);
+      bot.sendMessage(chatId, `✅ Tu es le seul admin — défi envoyé directement à ${registered.length} participant(s).`);
     }
     sendAdminDashboard(chatId);
     return;
@@ -392,7 +386,7 @@ bot.on("message", (msg) => {
     data.themes[week] = msg.text.trim();
     delete data.pending[chatId];
     saveData(data);
-    bot.sendMessage(chatId, `✅ Thème Semaine ${week} mis à jour !\n\n${data.themes[week]}`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, `✅ Thème de la semaine ${week} mis à jour !`);
     sendAdminDashboard(chatId);
     return;
   }
@@ -400,14 +394,15 @@ bot.on("message", (msg) => {
   // Admin : thème semaine prochaine
   if (pending && pending.step === "admin_theme_next" && isAdmin(chatId)) {
     data.nextWeekTheme = msg.text.trim();
+    data.reminderActive = false; // rappels stoppés
     delete data.pending[chatId];
     saveData(data);
-    bot.sendMessage(chatId, `✅ Thème de la semaine prochaine enregistré !\n\n${data.nextWeekTheme}`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, `✅ Thème de la semaine prochaine enregistré ! Les rappels sont suspendus jusqu'à la semaine suivante. 🎉`);
     sendAdminDashboard(chatId);
     return;
   }
 
-  // Relais messages
+  // Relais messages entre binômes
   const participant = data.registered[chatId];
   if (!participant) { bot.sendMessage(chatId, "👉 Tape /start pour t'inscrire au jeu."); return; }
   if (!participant.pairedWith) { bot.sendMessage(chatId, "⏳ Le tirage n'a pas encore eu lieu. Patiente... 🎯"); return; }
@@ -429,6 +424,7 @@ function relayMedia(msg, type) {
     bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
   } catch (e) { bot.sendMessage(chatId, "⚠️ Erreur lors de l'envoi. Réessaie."); }
 }
+
 bot.on("photo", (msg) => relayMedia(msg, "photo"));
 bot.on("voice", (msg) => relayMedia(msg, "voice"));
 bot.on("sticker", (msg) => relayMedia(msg, "sticker"));
@@ -443,7 +439,7 @@ bot.onText(/\/signal (.+)/, (msg, match) => {
   data.reports.push({ message, date: new Date().toISOString() });
   saveData(data);
   data.admins.forEach(adminId => bot.sendMessage(adminId, `🚨 *Nouveau signalement*\n\n${message}`, { parse_mode: "Markdown" }));
-  bot.sendMessage(chatId, "✅ Signalement transmis anonymement aux organisateurs.");
+  bot.sendMessage(chatId, "✅ Signalement transmis anonymement.");
 });
 
 // ─── /addadmin ────────────────────────────────────────────
@@ -462,6 +458,35 @@ bot.onText(/\/addadmin (\d+)/, (msg, match) => {
   }
 });
 
+// ─── RAPPELS QUOTIDIENS ───────────────────────────────────
+function checkDailyReminder() {
+  const data = loadData();
+  if (!data.reminderActive || data.nextWeekTheme) return;
+  if (data.currentWeek === 0) return;
+
+  const msg = `⏰ *Rappel quotidien*\n\n📅 Le thème de la *semaine prochaine* n'est pas encore défini !\n\nRendez-vous dans le dashboard → Thèmes → Éditer thème semaine prochaine pour l'ajouter dès maintenant et éviter toute surprise. 🎯`;
+  data.admins.forEach(adminId => {
+    bot.sendMessage(adminId, msg, { parse_mode: "Markdown" });
+  });
+}
+
+// Vérification toutes les 24h
+setInterval(checkDailyReminder, 24 * 60 * 60 * 1000);
+
+// ─── /removeadmin ─────────────────────────────────────────
+bot.onText(/\/removeadmin (\d+)/, (msg, match) => {
+  const chatId = String(msg.chat.id);
+  if (chatId !== String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Réservé à l'admin principal."); return; }
+  const targetId = match[1];
+  if (targetId === String(MAIN_ADMIN)) { bot.sendMessage(chatId, "❌ Tu ne peux pas te retirer toi-même."); return; }
+  const data = loadData();
+  if (!data.admins.includes(targetId)) { bot.sendMessage(chatId, "Cet ID n'est pas admin."); return; }
+  data.admins = data.admins.filter(a => a !== targetId);
+  saveData(data);
+  bot.sendMessage(chatId, `✅ Admin supprimé : ${targetId}`);
+  try { bot.sendMessage(targetId, `ℹ️ Tu n'es plus admin du bot Amis Invisibles.`); } catch (e) {}
+});
+
 // ─── FONCTIONS ADMIN ──────────────────────────────────────
 function sendAdminDashboard(chatId) {
   const data = loadData();
@@ -469,25 +494,24 @@ function sendAdminDashboard(chatId) {
   const h = Object.values(data.registered).filter(p => p.genre === "H").length;
   const f = Object.values(data.registered).filter(p => p.genre === "F").length;
   const paires = Math.floor(Object.keys(data.pairs).length / 2);
-  const nextTheme = data.nextWeekTheme ? "✅ Défini" : "⚠️ Non défini";
-  const gameStatus = data.gameStartDate ? `Semaine ${data.currentWeek} en cours` : "⏳ Pas encore lancé";
+  const nextTheme = data.nextWeekTheme ? "✅ Prêt" : "⚠️ Non défini";
+  const semaine = data.currentWeek > 0 ? `Semaine ${data.currentWeek}` : "Pas démarré";
 
   bot.sendMessage(chatId,
     `🎛️ *Dashboard Admin — Amis Invisibles*\n\n` +
     `👥 Inscrits : *${total}* (${h}H / ${f}F)\n` +
-    `👫 Binômes : *${paires}*\n` +
-    `🎮 Jeu : *${gameStatus}*\n` +
-    `📅 Thème S. prochaine : *${nextTheme}*\n` +
+    `👫 Binômes actifs : *${paires}*\n` +
     `🚨 Signalements : *${data.reports.length}*\n` +
-    `⏳ Défis en attente : *${data.pendingChallenges.length}*`,
+    `📅 Statut jeu : *${semaine}*\n` +
+    `📝 Thème semaine prochaine : *${nextTheme}*`,
     {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "👥 Inscrits", callback_data: "admin_list" }, { text: "👫 Binômes", callback_data: "admin_pairs" }],
+          [{ text: "👥 Voir inscrits", callback_data: "admin_list" }, { text: "👫 Gérer binômes", callback_data: "admin_pairs" }],
           [{ text: "📅 Thèmes", callback_data: "admin_theme_menu" }, { text: "🎯 Envoyer défi", callback_data: "admin_challenge" }],
-          [{ text: "🚨 Signalements", callback_data: "admin_reports" }, { text: "🎮 Lancer le jeu", callback_data: "admin_start_game" }],
-          [{ text: "🎉 Révélation finale", callback_data: "admin_reveal" }],
+          [{ text: "🚨 Signalements", callback_data: "admin_reports" }, { text: "🎉 Révélation finale", callback_data: "admin_reveal" }],
+          [{ text: "▶️ Démarrer le jeu", callback_data: "admin_start_game" }],
         ],
       },
     }
@@ -498,7 +522,7 @@ function sendAdminList(chatId) {
   const data = loadData();
   const list = Object.values(data.registered);
   if (list.length === 0) { bot.sendMessage(chatId, "Aucun inscrit pour l'instant."); return; }
-  const text = list.map((p, i) => `${i+1}. *${p.pseudo}* — ${p.genre} — ${p.pays} — ${p.pairedWith ? "✅" : "⏳"}`).join("\n");
+  const text = list.map((p, i) => `${i + 1}. *${p.pseudo}* — ${p.genre} — ${p.pays} — ${p.pairedWith ? "✅ binôme" : "⏳ sans binôme"}`).join("\n");
   bot.sendMessage(chatId, `📋 *Participants (${list.length}) :*\n\n${text}`, {
     parse_mode: "Markdown",
     reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] }
@@ -512,10 +536,10 @@ function sendAdminPairs(chatId) {
   const f = unpaired.filter(p => p.genre === "F").length;
   const paires = Math.floor(Object.keys(data.pairs).length / 2);
   let text = `👫 *Gestion des binômes*\n\nSans binôme : *${unpaired.length}* (${h}H / ${f}F)\nBinômes actifs : *${paires}*\n\n`;
-  text += (h > 0 && f > 0) ? `✅ Tirage possible : ${Math.min(h,f)} binôme(s)` : `⚠️ Besoin d'au moins 1H + 1F sans binôme`;
+  text += (h > 0 && f > 0) ? `✅ Tirage possible : ${Math.min(h, f)} binôme(s)` : `⚠️ Besoin d'au moins 1H + 1F`;
   bot.sendMessage(chatId, text, {
     parse_mode: "Markdown",
-    reply_markup: { inline_keyboard: [[{ text: "🎲 Tirage automatique", callback_data: "admin_autopair" }], [{ text: "⬅️ Retour", callback_data: "admin_back" }]] },
+    reply_markup: { inline_keyboard: [[{ text: "🎲 Lancer le tirage automatique", callback_data: "admin_autopair" }], [{ text: "⬅️ Retour", callback_data: "admin_back" }]] },
   });
 }
 
@@ -533,13 +557,12 @@ function autoCreatePairs(chatId) {
     data.registered[f.chatId].pairedWith = h.chatId;
     data.pairs[h.chatId] = f.chatId;
     data.pairs[f.chatId] = h.chatId;
-    const theme1 = data.themes[1];
-    const notif = `🎉 *Le jeu commence !*\n\nTon ami invisible t'attend. Écris-lui directement ici — ton identité restera secrète jusqu'à la révélation. 🤫\n\n${theme1}`;
+    const notif = `🎉 *Le jeu commence !*\n\nTon ami invisible t'attend. Écris-lui directement ici — ton identité restera secrète jusqu'à la révélation. 🤫\n\n${data.themes[1]}`;
     bot.sendMessage(h.chatId, notif, { parse_mode: "Markdown" });
     bot.sendMessage(f.chatId, notif, { parse_mode: "Markdown" });
   }
   saveData(data);
-  bot.sendMessage(chatId, `✅ *${count} binôme(s) créé(s) !*`, { parse_mode: "Markdown" });
+  bot.sendMessage(chatId, `✅ *${count} binôme(s) créé(s) !* Tous les participants ont été notifiés.`, { parse_mode: "Markdown" });
   sendAdminDashboard(chatId);
 }
 
@@ -549,15 +572,25 @@ function sendThemeToAll(chatId, week) {
   if (!theme) return;
   const participants = Object.values(data.registered);
   participants.forEach(p => bot.sendMessage(p.chatId, `📅 *Thème de la semaine :*\n\n${theme}`, { parse_mode: "Markdown" }));
-  bot.sendMessage(chatId, `✅ Thème S${week} envoyé à ${participants.length} participant(s).`);
+
+  // Si c'est le thème semaine prochaine qu'on envoie, on avance la semaine et on réactive les rappels
+  data.currentWeek = parseInt(week);
+  data.nextWeekTheme = null;
+  data.reminderActive = true;
+  saveData(data);
+
+  bot.sendMessage(chatId, `✅ Thème semaine ${week} envoyé à ${participants.length} participant(s).\n\n⚠️ Rappels activés pour le thème de la semaine prochaine.`);
   sendAdminDashboard(chatId);
 }
 
 function sendAdminReports(chatId) {
   const data = loadData();
   if (data.reports.length === 0) { bot.sendMessage(chatId, "Aucun signalement. ✅"); return; }
-  const text = data.reports.map((r, i) => `${i+1}. ${r.message}\n_${new Date(r.date).toLocaleString("fr-FR")}_`).join("\n\n");
-  bot.sendMessage(chatId, `🚨 *Signalements :*\n\n${text}`, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] } });
+  const text = data.reports.map((r, i) => `${i + 1}. ${r.message}\n_${new Date(r.date).toLocaleString("fr-FR")}_`).join("\n\n");
+  bot.sendMessage(chatId, `🚨 *Signalements :*\n\n${text}`, {
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: [[{ text: "⬅️ Retour", callback_data: "admin_back" }]] }
+  });
 }
 
 function revealAll(chatId) {
@@ -570,37 +603,13 @@ function revealAll(chatId) {
     if (!p1 || !p2) return;
     const r1 = p2.realUsername ? `@${p2.realUsername}` : p2.pseudo;
     const r2 = p1.realUsername ? `@${p1.realUsername}` : p1.pseudo;
-    bot.sendMessage(id1, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r1}* ! 🎁\n\nMerci d'avoir joué. 🖤`, { parse_mode: "Markdown" });
-    bot.sendMessage(id2, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r2}* ! 🎁\n\nMerci d'avoir joué. 🖤`, { parse_mode: "Markdown" });
+    bot.sendMessage(id1, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r1}* ! 🎁\n\nMerci d'avoir joué. On espère que ce mois a été beau. 🖤`, { parse_mode: "Markdown" });
+    bot.sendMessage(id2, `🎉 *La révélation est arrivée !*\n\nTon ami invisible était... *${r2}* ! 🎁\n\nMerci d'avoir joué. On espère que ce mois a été beau. 🖤`, { parse_mode: "Markdown" });
     count++;
   });
+  data.reminderActive = false;
+  saveData(data);
   bot.sendMessage(chatId, `✅ Révélation envoyée à ${count} binôme(s). Le jeu est terminé. 🎊`);
 }
-
-// ─── RAPPELS QUOTIDIENS ───────────────────────────────────
-function checkDailyReminder() {
-  const data = loadData();
-  if (!data.gameStartDate) return;
-
-  const today = new Date().toDateString();
-  if (data.lastReminderDate === today) return;
-
-  // Si thème semaine prochaine pas défini → rappel aux admins
-  if (!data.nextWeekTheme) {
-    data.admins.forEach(adminId => {
-      bot.sendMessage(adminId,
-        `⏰ *Rappel quotidien*\n\n📅 Le thème de la semaine prochaine n'est pas encore défini !\n\nVa dans le dashboard → Thèmes → "Définir thème semaine prochaine" pour éviter d'être pris de court. 🎯`,
-        { parse_mode: "Markdown" }
-      );
-    });
-    data.lastReminderDate = today;
-    saveData(data);
-  }
-}
-
-// Vérification toutes les heures
-setInterval(checkDailyReminder, 60 * 60 * 1000);
-// Vérification au démarrage aussi
-setTimeout(checkDailyReminder, 5000);
 
 console.log("🤖 AmiInvisibleBot v3 is running...");
