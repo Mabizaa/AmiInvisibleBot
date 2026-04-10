@@ -561,9 +561,14 @@ bot.on("message", async (msg) => {
   const participant = await Participant.findOne({ chatId });
   if (!participant) { bot.sendMessage(chatId, await getText("txt_erreur_pas_inscrit")); return; }
   if (!participant.pairedWith) { bot.sendMessage(chatId, await getText("txt_erreur_tirage")); return; }
+
+  // Bloquer les boutons keyboard pour qu'ils ne soient pas relayés
+  const keyboardButtons = ["📊 Mon statut", "🎁 Envoyer cadeau", "🚨 Signaler", "📚 FAQ"];
+  if (msg.text && keyboardButtons.includes(msg.text)) return;
+
   if (msg.text) {
-    bot.sendMessage(participant.pairedWith, `💌 *Message de ton ami invisible :*\n\n${msg.text}`, { parse_mode: "Markdown" });
-    bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
+    bot.sendMessage(participant.pairedWith, `📩 *${participant.pseudo} :* ${msg.text}`, { parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "✅");
   }
 });
 
@@ -625,8 +630,10 @@ bot.on("photo", async (msg) => {
   }
   const p = await Participant.findOne({ chatId });
   if (!p || !p.pairedWith) return;
-  bot.sendPhoto(p.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: "📸 *Photo de ton ami invisible* 🤫", parse_mode: "Markdown" });
-  bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
+  const senderP = await Participant.findOne({ chatId });
+  const pseudo = senderP ? senderP.pseudo : "?";
+  bot.sendPhoto(p.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: `📩 *${pseudo}*`, parse_mode: "Markdown" });
+  bot.sendMessage(chatId, "✅");
 });
 
 async function relayMedia(msg, type) {
@@ -634,10 +641,12 @@ async function relayMedia(msg, type) {
   const p = await Participant.findOne({ chatId });
   if (!p || !p.pairedWith) return;
   try {
-    if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: "🎙️ *Vocal de ton ami invisible* 🤫", parse_mode: "Markdown" });
+    const senderPart = await Participant.findOne({ chatId });
+    const psd = senderPart ? senderPart.pseudo : "?";
+    if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: `📩 *${psd}*`, parse_mode: "Markdown" });
     else if (type === "sticker") bot.sendSticker(p.pairedWith, msg.sticker.file_id);
-    else if (type === "video") bot.sendVideo(p.pairedWith, msg.video.file_id, { caption: "🎥 *Vidéo de ton ami invisible* 🤫", parse_mode: "Markdown" });
-    bot.sendMessage(chatId, "✅ Transmis anonymement. 🤫");
+    else if (type === "video") bot.sendVideo(p.pairedWith, msg.video.file_id, { caption: `📩 *${psd}*`, parse_mode: "Markdown" });
+    bot.sendMessage(chatId, "✅");
   } catch (e) { bot.sendMessage(chatId, "⚠️ Erreur lors de l'envoi."); }
 }
 bot.on("voice", (msg) => relayMedia(msg, "voice"));
