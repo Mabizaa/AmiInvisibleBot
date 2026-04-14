@@ -568,7 +568,7 @@ bot.on("message", async (msg) => {
 
   if (msg.text) {
     bot.sendMessage(participant.pairedWith, `📩 *${participant.pseudo} :* ${msg.text}`, { parse_mode: "Markdown" });
-    bot.sendMessage(chatId, "✅");
+    bot.sendMessage(chatId, "✅ Envoyé");
   }
 });
 
@@ -633,7 +633,7 @@ bot.on("photo", async (msg) => {
   const senderP = await Participant.findOne({ chatId });
   const pseudo = senderP ? senderP.pseudo : "?";
   bot.sendPhoto(p.pairedWith, msg.photo[msg.photo.length - 1].file_id, { caption: `📩 *${pseudo}*`, parse_mode: "Markdown" });
-  bot.sendMessage(chatId, "✅");
+  bot.sendMessage(chatId, "✅ Envoyé");
 });
 
 async function relayMedia(msg, type) {
@@ -646,7 +646,7 @@ async function relayMedia(msg, type) {
     if (type === "voice") bot.sendVoice(p.pairedWith, msg.voice.file_id, { caption: `📩 *${psd}*`, parse_mode: "Markdown" });
     else if (type === "sticker") bot.sendSticker(p.pairedWith, msg.sticker.file_id);
     else if (type === "video") bot.sendVideo(p.pairedWith, msg.video.file_id, { caption: `📩 *${psd}*`, parse_mode: "Markdown" });
-    bot.sendMessage(chatId, "✅");
+    bot.sendMessage(chatId, "✅ Envoyé");
   } catch (e) { bot.sendMessage(chatId, "⚠️ Erreur lors de l'envoi."); }
 }
 bot.on("voice", (msg) => relayMedia(msg, "voice"));
